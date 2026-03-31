@@ -1,0 +1,3 @@
+# Placeholder config
+task: internal_inference
+threshold: 0.5
