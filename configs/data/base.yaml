@@ -1,0 +1,6 @@
+# Placeholder config
+wsi_dir: /path/to/wsi
+manifest_csv: /path/to/manifest.csv
+tile_mpp: 0.5
+tile_px: 512
+stride: 512

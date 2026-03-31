@@ -1,0 +1,6 @@
+# Placeholder config
+optimizer: adamw
+lr: 3e-4
+weight_decay: 1e-4
+epochs: 80
+batch_size: 1
