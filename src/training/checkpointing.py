@@ -1,6 +1,6 @@
-"""Placeholder module created during repository refactor.
-Populate with code from existing private assets/notebooks in next step.
-"""
+import numpy as np
+from sklearn.metrics import average_precision_score
 
-
-TODO = "TO_BE_IMPLEMENTED_FROM_EXISTING_PROJECT_FILES"
+def calc_ap_lift(y,p):
+    prev=float(np.mean(y)); pr=float(average_precision_score(y,p)) if len(np.unique(y))>1 else 0.0
+    return pr-prev, pr, prev
