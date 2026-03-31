@@ -1,0 +1,698 @@
+\chapter{Results}
+
+% \section{Cross-Validation Performance on Training Cohort}
+% Using rigorous cross-validation, our final MIL model achieved high slide-level classification performance in distinguishing HN vs. LN tumors. The average cross-val ROC AUC was approximately $0.87$, with fold-to-fold variation from about $0.85$ up to $0.90$. This indicates excellent discrimination between high- and low-neutrophil cases. The corresponding mean accuracy was around $75$–$80\%$, and we observed balanced precision and recall after calibration. For instance, at the 0.5 probability threshold (after logit calibration), the model’s cross-val sensitivity and specificity were both in the range of roughly $70$–$85\%$ (depending on the fold). We include these metrics explicitly to fulfill the thesis objectives: the final model’s cross-validation accuracy was $\sim\!78\%$, with an F1-score around $0.72$ and ROC AUC $\sim\!0.87$. In contrast, the initial baseline (CLAM + ViT-S model) performed substantially worse, with an AUC only around $0.70$–$0.75$ (approximately $0.63$ in one run) and much poorer class separation. Figure 4.1 highlights this difference: in the baseline model (Fig. 4.1a), the predicted HN probabilities do not strongly correlate with the true CD15\textsuperscript{high} neutrophil fractions – red (HN) and blue (LN) markers overlap considerably – whereas our TransMIL+TITAN model’s outputs align much more closely with ground truth (Fig. 4.1b). In other words, the upgraded architecture and features provided a significant performance lift. HN-labeled cases tend to cluster toward the upper-right of Fig. 4.1b (high predicted risk, high actual neutrophil percentage), demonstrating that our model captures the intended biological signal. 
+
+% We also emphasize the effect of our **stability-oriented training**. Without the instance dropout and attention penalty regularizations (and without multi-bagging), the TransMIL model’s performance deteriorated markedly. In an ablation experiment, a TransMIL model trained without multi-bag sampling and without the attention penalty (“Baseline TransMIL”) attained an average AUC of only $\sim0.64$, accuracy $61\%$, F1-score $0.44$, and sensitivity $29\%$, far below the regularized model (AUC $0.83$, accuracy $77\%$, F1 $0.73$, sensitivity $57\%$). This confirms that our contributions – both the MIL multi-bag inference strategy and the TAN-specific regularization – substantially improve performance. We observed qualitatively fewer “borderline” predictions near 0.5 in the regularized model, indicating it was more confident in its decisions. In fact, the distribution of predicted probabilities became more bimodal (farther from 0.5) when using $k$-bagging, suggesting reduced output variance. To quantify this, we measured the variability of predictions across the multiple inference bags for each slide. The final model’s median bag-level instability was only $\sim\!0.017$ (on a 0–1 probability scale), indicating very stable slide scores across different tile subsets. By contrast, the single-bag baseline exhibited higher variability and more outputs in the ambiguous 0.4–0.6 range. While we did not include a dedicated metric for prediction variance in the thesis draft, these findings qualitatively demonstrate that multi-bagging achieved its goal of more confident predictions (fewer borderline cases).
+
+% Finally, we applied a **probability calibration** step to the cross-validation outputs. As described in Section 3.5, a logistic calibration was fitted per fold to align the decision boundary. After calibration, a score of $0.5$ roughly corresponded to the model’s HN/LN cutoff, meaning we could use $p=0.5$ as a consistent threshold across folds. Indeed, we found that calibration improved the consistency of metrics across folds and allowed straightforward thresholding. For example, before calibration the raw output distributions varied by fold (some folds had generally higher predicted probabilities than others), but after rescaling, the score distributions were more comparable. We verified the calibration effectiveness by examining reliability curves. The model’s Expected Calibration Error (ECE) was about $16\%$ in cross-validation, indicating some remaining calibration mismatch but a reasonable alignment given the sample size. In practical terms, no substantial over- or under-confidence remained – the model’s predicted risk scores could be interpreted meaningfully as probabilities. We proceed to report all results using these calibrated probabilities for clarity.
+
+% \begin{table}[H]
+% \centering
+% \caption{Out-of-fold (OOF) performance on the development cohort (patient-mean aggregation), restricted to the split seeds used in the final ensemble (split\_seed $\in \{1,58\}$). Threshold-based metrics are reported at $p=0.5$.}
+% \label{tab:oof_main}
+% \resizebox{\textwidth}{!}{%
+% \begin{tabular}{lcccccc}
+% \hline
+% Model variant (TransMIL + CONCH) & ROC AUC & PR-AUC & Acc & F1 & Sens & Spec \\
+% \hline
+% \textbf{K-bags + penalties} (final) & \textbf{0.688} & 0.713 & \textbf{0.663} & \textbf{0.717} & \textbf{0.760} & 0.538 \\
+% single bag, no penalties & 0.643 & \textbf{0.718} & 0.562 & 0.530 & 0.440 & \textbf{0.718} \\
+% K-bags only & 0.647 & 0.666 & 0.607 & 0.653 & 0.640 & 0.564 \\
+% K-bags + penalties + norm & 0.555 & 0.631 & 0.517 & 0.507 & 0.440 & 0.615 \\
+% \hline
+% \end{tabular}
+% }
+% \end{table}
+
+
+% \begin{figure}[H]
+%   \centering
+%   \subfloat[Baseline MIL (CLAM+ViT) predictions]{\includegraphics[width=0.45\textwidth]{images_results/OOF_clam_lunit.png}}
+%   \hfill
+%   \subfloat[Final TransMIL+TITAN predictions]{\includegraphics[width=0.45\textwidth]{images_results/oof_conch_final_pmean_vs_CD15.png}}
+%   \caption{Out-of-fold predicted HN probability vs. actual CD15\textsuperscript{high} neutrophil fraction for the development cohort, for (a) the baseline model and (b) the final model. Each point represents one training slide. Red points are HN-labeled cases, blue are LN. The baseline model’s predictions show poor alignment with true neutrophil counts (red/blue points overlap, trend is weak), whereas the final model’s outputs correlate strongly with the true inflammation levels. High-risk HN cases (red) cluster toward the top-right in (b), indicating the model correctly assigns higher probabilities to slides with high neutrophil infiltration.}
+%   \label{fig:scatter_dev}
+% \end{figure}
+
+% \section{Cross-Validation Performance on Training Cohort 2}
+% \label{sec:cv_performance2}
+
+% We report out-of-fold (OOF) performance on the internal development cohort using patient-wise cross-validation (see Section~3.x). For TransMIL+CONCH experiments, we restrict evaluation to the split seeds used in the final ensemble (split\_seed $\in \{1,58\}$), yielding $N=89$ unique patients (50 HN, 39 LN). Unless stated otherwise, threshold-based metrics are computed at $p=0.5$ on the \emph{rescaled} OOF probabilities described below (denoted $p_{\mathrm{resc}}$).
+
+% \paragraph{OOF discrimination and comparison to the baseline.}
+% Table~\ref{tab:oof_main} summarizes patient-level OOF metrics (patient-mean aggregation). The final model configuration (TransMIL+CONCH with K-bag inference and attention penalties) achieved ROC AUC $=0.806$ (bootstrap 95\% CI: 0.715--0.890) and PR-AUC (average precision) $=0.855$ (95\% CI: 0.765--0.924). At the fixed threshold $p=0.5$, it achieved accuracy $=0.730$, F1 $=0.750$, sensitivity $=0.720$, and specificity $=0.744$.
+
+% In contrast, the baseline model (CLAM with Lunit ViT-S features; first experiment) showed substantially weaker discrimination: ROC AUC $=0.629$ (95\% CI: 0.508--0.742) and PR-AUC $=0.735$ (95\% CI: 0.615--0.840), with accuracy $=0.584$ and F1 $=0.593$ at $p=0.5$. This gap is also evident in the CD15 association plots (Figure~\ref{fig:scatter_dev_cd15}), where the baseline exhibits limited alignment between predicted probability and patient-level CD15, while the final model shows a clearer monotonic trend.
+
+% \paragraph{Ablation across stability mechanisms.}
+% We evaluated TransMIL+CONCH ablations that remove or isolate stability-oriented components. Within the same OOF protocol (patient-mean, split\_seed $\in\{1,58\}$), the strongest discrimination in this set was obtained by the K-bags-only variant (ROC AUC $=0.855$), while the final model was selected for downstream evaluation based on held-out generalization (reported separately) rather than OOF AUC alone. Importantly, the penalty-based variants tended to improve calibration quality (see below), even when AUC differences were modest.
+
+% \paragraph{Fold-wise logit rescaling and calibration evidence.}
+% The results reported in Table~\ref{tab:oof_main} use a fold-wise \emph{logit rescaling} step (standardization of logits within each fold, followed by a sigmoid), producing $p_{\mathrm{resc}}$. This operation is intended to make the $p=0.5$ decision boundary comparable across folds by correcting fold-dependent logit shifts. Figure~\ref{fig:reliability_final} reports the reliability curve for the final model under this rescaling. The final model has Brier score $=0.190$ and expected calibration error (ECE) $=0.099$ in OOF (Table~\ref{tab:oof_main}), indicating non-perfect but substantially improved probability alignment for a small cohort.
+
+% The impact of rescaling is also visible in threshold behavior for the final model. Using the \emph{raw} patient-mean score ($p_{\mathrm{raw}}$), the confusion matrix at $p=0.5$ was TN=21, FP=18, FN=12, TP=38; after rescaling ($p_{\mathrm{resc}}$) it became TN=29, FP=10, FN=14, TP=36. In other words, rescaling reduced false positives and yielded a more balanced sensitivity/specificity trade-off at the same nominal threshold.
+
+% \paragraph{Association with patient-level CD15 signal.}
+% For the subset of patients with available CD15 measurements ($n=81$), we quantified monotonic association between predictions and CD15 using Spearman correlation. For the final model, the association strengthened after rescaling: $\rho=0.328$ (raw, $p=2.82\times10^{-3}$) versus $\rho=0.482$ (rescaled, $p=5.17\times10^{-6}$). For the baseline CLAM model, the correlation was weak and not statistically significant under either score: $\rho=0.117$ (raw, $p=0.297$) and $\rho=0.184$ (rescaled, $p=0.0999$). Figure~\ref{fig:scatter_dev_cd15} visualizes these differences.
+
+% \paragraph{Prediction stability under K-bag inference.}
+% To assess stability under multi-bag inference, we measured variability of the patient-level probability across repeated bag samplings (as output by the inference pipeline). Figure~\ref{fig:bag_instability} shows the distribution of this instability for the final model; values are concentrated close to zero, consistent with low sensitivity of patient scores to the particular sampled tile subset. (A numeric summary such as median/IQR can be added once the underlying per-patient instability values are exported alongside the plot.)
+
+% \begin{table}[H]
+% \centering
+% \caption{Out-of-fold (OOF) performance on the development cohort (patient-mean aggregation). TransMIL+CONCH metrics are restricted to split seeds $\{1,58\}$ to match the final ensemble. Threshold-based metrics are computed at $p=0.5$ on rescaled probabilities ($p_{\mathrm{resc}}$). AUC/AP confidence intervals are patient-level bootstrap 95\% CI (2000 bootstraps).}
+% \label{tab:oof_main}
+% \resizebox{\textwidth}{!}{%
+% \begin{tabular}{lcccccccc}
+% \hline
+% Model variant & ROC AUC (95\% CI) & PR-AUC (95\% CI) & Acc & F1 & Sens & Spec & Brier & ECE \\
+% \hline
+% K-bags only & 0.855 (0.776--0.923) & 0.906 (0.846--0.954) & 0.775 & 0.783 & 0.720 & 0.846 & 0.179 & 0.145 \\
+% K-bags + penalties + norm & 0.807 (0.708--0.890) & 0.855 (0.762--0.930) & 0.775 & 0.787 & 0.740 & 0.821 & 0.191 & 0.141 \\
+% \textbf{K-bags + penalties (final)} & \textbf{0.806 (0.715--0.890)} & \textbf{0.855 (0.765--0.924)} & 0.730 & 0.750 & 0.720 & 0.744 & 0.190 & 0.099 \\
+% single bag, no penalties & 0.803 (0.701--0.885) & 0.870 (0.787--0.932) & 0.775 & 0.778 & 0.700 & 0.872 & 0.192 & 0.163 \\
+% CLAM + Lunit ViT-S (baseline) & 0.629 (0.508--0.742) & 0.735 (0.615--0.840) & 0.584 & 0.593 & 0.540 & 0.641 & 0.235 & 0.107 \\
+% \hline
+% \end{tabular}}
+% \end{table}
+
+% \begin{figure}[H]
+%   \centering
+%   % Requires \usepackage{subcaption}
+%   \begin{subfigure}[t]{0.48\textwidth}
+%     \centering
+%     \includegraphics[width=\textwidth]{images_results/CLAM_p_resc_mean_vs_CD15.png}
+%     \caption{Baseline CLAM (rescaled OOF score)}
+%   \end{subfigure}\hfill
+%   \begin{subfigure}[t]{0.48\textwidth}
+%     \centering
+%     \includegraphics[width=\textwidth]{images_results/TransMIL_p_resc_mean_vs_CD15.png}
+%     \caption{Final TransMIL+CONCH (rescaled OOF score)}
+%   \end{subfigure}
+%   \caption{OOF predicted HN probability (patient-mean, rescaled) versus patient-level CD15 for the subset with available CD15 measurements ($n=81$). Red points are HN-labeled patients and blue points are LN-labeled patients. The final model shows stronger monotonic association with CD15 than the baseline model (see text for Spearman $\rho$).}
+%   \label{fig:scatter_dev_cd15}
+% \end{figure}
+
+% \begin{figure}[H]
+%   \centering
+%   \includegraphics[width=0.62\textwidth]{images_results/reliability_final_oof.png}
+%   \caption{Reliability curve for the final model in OOF after fold-wise logit rescaling.}
+%   \label{fig:reliability_final}
+% \end{figure}
+
+% \begin{figure}[H]
+%   \centering
+%   \includegraphics[width=0.62\textwidth]{images_results/hist_bag_instability_final.png}
+%   \caption{Distribution of prediction instability under repeated bag sampling for the final model (lower values indicate more stable patient scores).}
+%   \label{fig:bag_instability}
+% \end{figure}
+
+% \section{Cross-Validation Performance on Training Cohort}
+% \label{sec:cv_performance}
+
+% We report out-of-fold (OOF) performance on the internal development cohort using patient-wise cross-validation (Section~3.x). For all TransMIL+CONCH experiments we restrict evaluation to the split seeds used in the final ensemble (split\_seed $\in \{1,58\}$), and aggregate predictions at the patient level (patient-mean). In the following, we distinguish between (i) the \emph{raw} patient-mean score produced by the model ($p_{\mathrm{raw}}$), and (ii) a \emph{fold-wise logit rescaled} score ($p_{\mathrm{resc}}$), obtained by standardizing logits within each fold (and split seed) and applying a sigmoid. This rescaling is used to mitigate fold-dependent logit shifts and make the $p=0.5$ threshold more comparable across folds; it is therefore the score used for threshold-based reporting unless stated otherwise.
+
+% \paragraph{Discrimination and comparison to the baseline.}
+% Table~\ref{tab:oof_rescaled_main} reports the main OOF metrics computed on $p_{\mathrm{resc}}$. The final configuration (TransMIL+CONCH with K-bag inference and attention penalties) achieved ROC AUC $=0.806$ (bootstrap 95\% CI: 0.715--0.890) and PR-AUC $=0.855$ (95\% CI: 0.765--0.924). At the fixed threshold $p=0.5$, it achieved accuracy $=0.730$, F1 $=0.750$, sensitivity $=0.720$, and specificity $=0.744$.
+
+% In contrast, the baseline model (CLAM with Lunit ViT-S features; first experiment) showed substantially weaker discrimination: ROC AUC $=0.629$ (95\% CI: 0.508--0.742) and PR-AUC $=0.735$ (95\% CI: 0.615--0.840), with accuracy $=0.584$ and F1 $=0.593$ at $p=0.5$. This difference is also visible in the CD15 association plots (Figure~\ref{fig:scatter_dev_cd15_resc}), where the baseline exhibits limited alignment between predicted probability and patient-level CD15, while the final model shows a clearer monotonic trend.
+
+% \paragraph{Ablation across stability mechanisms.}
+% We evaluated TransMIL+CONCH ablations that isolate or remove stability-oriented components. Within the same OOF protocol, the K-bags-only variant achieved the highest AUC in this set (ROC AUC $=0.855$), whereas the final model was selected for downstream evaluation based on held-out generalization (reported separately) rather than OOF AUC alone. Importantly, the penalty-based variants tended to improve calibration quality (see below), even when discrimination differences were modest.
+
+% \paragraph{Why we report both raw and rescaled scores.}
+% Using the raw patient-mean score $p_{\mathrm{raw}}$ with a fixed threshold can be misleading because raw logits can be shifted across folds (and split seeds), making $p=0.5$ non-comparable. Table~\ref{tab:oof_raw_diag} reports the same OOF metrics computed directly on $p_{\mathrm{raw}}$. While raw and rescaled metrics are computed on the same OOF predictions, threshold-based quantities (accuracy/sensitivity/specificity) and even pooled AUC/AP can change because the rescaling is applied fold-wise. For the final model, the confusion matrix at $p=0.5$ shifted from TN=21, FP=18, FN=12, TP=38 (raw) to TN=29, FP=10, FN=14, TP=36 (rescaled), reducing false positives and yielding a more balanced sensitivity/specificity trade-off at the same nominal threshold. For this reason, the rescaled score $p_{\mathrm{resc}}$ is used throughout the thesis whenever a fixed decision threshold is needed.
+
+% \paragraph{Association with patient-level CD15.}
+% For the subset of patients with available CD15 measurements ($n=81$), we quantified monotonic association between model predictions and CD15 using Spearman correlation. For the final model, the association strengthened after rescaling: $\rho=0.328$ (raw, $p=2.82\times10^{-3}$) versus $\rho=0.482$ (rescaled, $p=5.17\times10^{-6}$). For the baseline CLAM model, the correlation was weak and not statistically significant under either score: $\rho=0.117$ (raw, $p=0.297$) and $\rho=0.184$ (rescaled, $p=0.0999$). Figure~\ref{fig:scatter_dev_cd15_resc} visualizes the rescaled scores (main view), while the raw versions are provided as supplementary diagnostics.
+
+% \paragraph{Calibration and stability diagnostics.}
+% Figure~\ref{fig:reliability_final} reports the reliability curve for the final model in OOF after fold-wise logit rescaling. The final model has Brier score $=0.190$ and expected calibration error (ECE) $=0.099$ in OOF (Table~\ref{tab:oof_rescaled_main}), indicating non-perfect but improved probability alignment given the small cohort. Finally, to assess stability under multi-bag inference, we measured variability of patient-level probability across repeated bag samplings (as output by the inference pipeline). Figure~\ref{fig:bag_instability} shows the distribution of this instability for the final model; values concentrate near zero, consistent with low sensitivity of patient scores to the particular sampled tile subset.
+
+% % ----------------------- TABLES -----------------------
+
+% % \begin{table}[H]
+% % \centering
+% % \caption{Main OOF performance on the development cohort (patient-mean aggregation). TransMIL+CONCH metrics are restricted to split seeds $\{1,58\}$. Threshold-based metrics are computed at $p=0.5$ on rescaled probabilities ($p_{\mathrm{resc}}$). AUC/AP confidence intervals are patient-level bootstrap 95\% CI (2000 bootstraps).}
+% % \label{tab:oof_rescaled_main}
+% % \resizebox{\textwidth}{!}{%
+% % \begin{tabular}{lcccccccc}
+% % \hline
+% % Model variant & ROC AUC (95\% CI) & PR-AUC (95\% CI) & Acc & F1 & Sens & Spec & Brier & ECE \\
+% % \hline
+% % K-bags only & 0.855 (0.776--0.923) & 0.906 (0.846--0.954) & 0.775 & 0.783 & 0.720 & 0.846 & 0.179 & 0.145 \\
+% % K-bags + penalties + norm & 0.807 (0.708--0.890) & 0.855 (0.762--0.930) & 0.775 & 0.787 & 0.740 & 0.821 & 0.191 & 0.141 \\
+% % \textbf{K-bags + penalties (final)} & \textbf{0.806 (0.715--0.890)} & \textbf{0.855 (0.765--0.924)} & 0.730 & 0.750 & 0.720 & 0.744 & 0.190 & 0.099 \\
+% % single bag, no penalties & 0.803 (0.701--0.885) & 0.870 (0.787--0.932) & 0.775 & 0.778 & 0.700 & 0.872 & 0.192 & 0.163 \\
+% % CLAM + Lunit ViT-S (baseline) & 0.629 (0.508--0.742) & 0.735 (0.615--0.840) & 0.584 & 0.593 & 0.540 & 0.641 & 0.235 & 0.107 \\
+% % \hline
+% % \end{tabular}}
+% % \end{table}
+
+% % \begin{table}[H]
+% % \centering
+% % \caption{Diagnostic OOF performance computed directly on raw patient-mean probabilities ($p_{\mathrm{raw}}$), restricted to split seeds $\{1,58\}$. Threshold-based metrics use $p=0.5$. This table is provided for transparency; fold-wise logit rescaling is used for main reporting (Table~\ref{tab:oof_rescaled_main}).}
+% % \label{tab:oof_raw_diag}
+% % \resizebox{\textwidth}{!}{%
+% % \begin{tabular}{lcccccc}
+% % \hline
+% % Model variant (TransMIL + CONCH) & ROC AUC & PR-AUC & Acc & F1 & Sens & Spec \\
+% % \hline
+% % \textbf{K-bags + penalties} (final) & \textbf{0.688} & 0.713 & \textbf{0.663} & \textbf{0.717} & \textbf{0.760} & 0.538 \\
+% % single bag, no penalties & 0.643 & \textbf{0.718} & 0.562 & 0.530 & 0.440 & \textbf{0.718} \\
+% % K-bags only & 0.647 & 0.666 & 0.607 & 0.653 & 0.640 & 0.564 \\
+% % K-bags + penalties + norm & 0.555 & 0.631 & 0.517 & 0.507 & 0.440 & 0.615 \\
+% % \hline
+% % \end{tabular}}
+% % \end{table}
+
+% \begin{table}[H]
+% \centering
+% \caption{Main OOF performance on the development cohort (patient-mean aggregation). Metrics are restricted to split seeds $\{1,58\}$. Threshold-based metrics are computed at $p=0.5$ on rescaled probabilities ($p_{\mathrm{resc}}$). AUC/AP confidence intervals are patient-level bootstrap 95\% CI (2000 bootstraps).}
+% \label{tab:oof_rescaled_main}
+% \resizebox{\textwidth}{!}{%
+% \begin{tabular}{lcccccccc}
+% \hline
+% Model variant & ROC AUC (95\% CI) & PR-AUC (95\% CI) & Acc & F1 & Sens & Spec & Brier & ECE \\
+% \hline
+% CLAM + Lunit ViT/s (baseline) & 0.629 (0.510--0.743) & 0.735 (0.611--0.836) & 0.584 & 0.593 & 0.540 & 0.641 & 0.235 & 0.107 \\
+% TransMIL + CONCH (vanilla) & 0.803 (0.710--0.885) & \textbf{0.870 (0.790--0.934)} & \textbf{0.775} & \textbf{0.778} & 0.700 & \textbf{0.872} & 0.193 & 0.147 \\
+% \textbf{TransMIL + CONCH with K-Bags and Penalized Selection (Final)} & \textbf{0.806 (0.712--0.889)} & 0.855 (0.765--0.926) & 0.730 & 0.750 & \textbf{0.720} & 0.744 & \textbf{0.191} & \textbf{0.097} \\
+% \hline
+% \end{tabular}}
+% \end{table}
+
+% \begin{table}[H]
+% \centering
+% \caption{Diagnostic OOF performance computed directly on raw patient-mean probabilities ($p_{\mathrm{raw}}$), restricted to split seeds $\{1,58\}$. Threshold-based metrics use $p=0.5$. AUC/AP confidence intervals are patient-level bootstrap 95\% CI (2000 bootstraps). This table is provided for transparency; fold-wise logit rescaling is used for main reporting (Table~\ref{tab:oof_rescaled_main}).}
+% \label{tab:oof_raw_diag}
+% \resizebox{\textwidth}{!}{%
+% \begin{tabular}{lcccccc}
+% \hline
+% Model variant & ROC AUC (95\% CI) & PR-AUC (95\% CI) & Acc & F1 & Sens & Spec \\
+% \hline
+% CLAM + Lunit ViT/s (baseline) & 0.602 (0.484--0.722) & 0.706 (0.583--0.821) & 0.596 & 0.710 & \textbf{0.880} & 0.231 \\
+% TransMIL + CONCH (vanilla) & 0.643 (0.523--0.755) & \textbf{0.718 (0.596--0.835)} & 0.562 & 0.530 & 0.440 & \textbf{0.718} \\
+% \textbf{TransMIL + CONCH with K-Bags and Penalized Selection (Final)} & \textbf{0.688 (0.567--0.799)} & 0.713 (0.587--0.842) & \textbf{0.663} & \textbf{0.717} & 0.760 & 0.538 \\
+% \hline
+% \end{tabular}}
+% \end{table}
+
+% % ----------------------- FIGURES -----------------------
+
+% \begin{figure}[H]
+%   \centering
+%   % Requires \usepackage{subcaption}
+%   \begin{subfigure}[t]{0.48\textwidth}
+%     \centering
+%     \includegraphics[width=\textwidth]{images_results/CLAM_p_resc_mean_vs_CD15.png}
+%     \caption{Baseline CLAM (rescaled OOF score)}
+%   \end{subfigure}\hfill
+%   \begin{subfigure}[t]{0.48\textwidth}
+%     \centering
+%     \includegraphics[width=\textwidth]{images_results/TransMIL_p_resc_mean_vs_CD15.png}
+%     \caption{Final TransMIL+CONCH (rescaled OOF score)}
+%   \end{subfigure}
+%   \caption{OOF predicted HN probability (patient-mean, rescaled) versus patient-level CD15 for the subset with available CD15 measurements ($n=81$). Red points are HN-labeled patients and blue points are LN-labeled patients. Spearman correlations are reported in the text. Raw-score versions of the same plots are provided as supplementary diagnostics.}
+%   \label{fig:scatter_dev_cd15_resc}
+% \end{figure}
+
+% \begin{figure}[H]
+%   \centering
+%   \includegraphics[width=0.62\textwidth]{images_results/reliability_final_oof.png}
+%   \caption{Reliability curve for the final model in OOF after fold-wise logit rescaling.}
+%   \label{fig:reliability_final}
+% \end{figure}
+
+% \begin{figure}[H]
+%   \centering
+%   \includegraphics[width=0.62\textwidth]{images_results/hist_bag_instability_final.png}
+%   \caption{Distribution of prediction instability under repeated bag sampling for the final model (lower values indicate more stable patient scores).}
+%   \label{fig:bag_instability}
+% \end{figure}
+
+% ------------------------------------------------------------
+% Drop-in replacement: Cross-Validation Performance on Training Cohort
+% ------------------------------------------------------------
+In this chapter, we report the experimental evaluation of the proposed MIL pipeline for predicting HN vs.\ LN colorectal tumors from routine H\&E WSIs. As described in the Methods (Sec.~3.1--3.4), models were trained on the labeled development cohort (N=89) using 5-fold patient-stratified cross-validation repeated over two split seeds (2 $\times$ 5 = 10 runs). Training used AdamW (lr=$3\times10^{-4}$, weight decay $10^{-4}$), dropout $0.2$, and the stability-oriented checkpoint selection criterion based on AP-lift with anti-degeneracy penalties (Sec.~3.4). In practice, the selected checkpoints are typically reached within the first $\sim$20 epochs (Table~4.1), consistent with a fast early improvement followed by a noisy plateau under weak supervision and stochastic bag sampling.
+
+Unless otherwise specified, cross-validation results are computed from patient-level out-of-fold (OOF) predictions aggregated across ensemble members, and we report both raw ensemble probabilities ($p_{\mathrm{raw}}$) and probabilities after fold-wise logit standardization ($p_{\mathrm{resc}}$) as described in Sec.~3.5.
+
+The chapter is organized as follows. Section~4.1 reports cross-validation performance on the development cohort (OOF) and includes a brief qualitative note on training dynamics through pooled learning curves, meant only to contextualize optimization stability. Section~4.2 evaluates generalization on an independent held-out labeled cohort. Section~4.3 presents interpretability analyses based on attention-derived heatmaps and representative case studies. Finally, Section~4.4 reports external validation on TCGA COAD/READ by testing the association between the predicted HN-risk score and disease-free survival (DFS).
+
+
+
+% \section{Validation monitoring across epochs (pooled learning curves)}
+% \label{sec:pooled_learning_curves}
+
+% This section documents the optimization dynamics of the final TransMIL+CONCH configuration and provides stability-oriented diagnostics that contextualize the cross-validation and held-out results reported in the following sections. Importantly, the learning curves shown here are meant as \emph{monitoring evidence} rather than as the primary performance estimates: the decisive model selection and all reported OOF metrics rely on the deterministic multi-bag validation and checkpointing protocol described in Sec.~3.4.
+
+% \paragraph{Per-epoch monitoring protocol.}
+% At each epoch, we tracked discrimination on both training and validation splits. Training metrics are computed online during the training pass and therefore reflect stochastic bag sampling and regularization effects, which can make them appear pessimistic or unstable. For computational practicality, the per-epoch validation curves were computed using a lightweight approximation (one deterministic validation bag per patient) to avoid the cost of full multi-bag evaluation at every epoch; consequently, these curves are expected to be noisier than the checkpoint-selection signal.
+
+% \paragraph{Pooling across runs and interpretation.}
+% Figures~4.1--4.2 summarize the raw learning curves by pooling all available runs (2 split seeds $\times$ 5 folds $=$ 10 runs) and reporting the mean value at each epoch. This aggregation provides a compact overview but hides fold-to-fold variability. Moreover, late-epoch behavior becomes unreliable because different runs may stop at different epochs due to early stopping and rollback; thus, late-epoch spikes should be interpreted cautiously as reduced support in the pooled mean rather than as definitive evidence of degradation.
+
+% Within the epoch range where most runs still contribute, both ROC AUC and PR-AUC improve from near-chance performance in early epochs to a moderate plateau, indicating that the model learns useful discrimination early on. Occasional crossings between training and validation curves are plausible in this setting because training metrics are measured under stochastic bag sampling, while validation is computed deterministically on held-out patients (yet under a single-bag approximation).
+
+% \paragraph{Checkpointing diagnostics.}
+% To characterize optimization stability beyond the pooled curves, Table~4.1 summarizes checkpointing diagnostics extracted from the same training logs. The rollback-on-plateau mechanism frequently reached its maximum number of restarts, indicating non-smooth optimization. In addition, saturation events were common across epochs, consistent with the need for explicit anti-degeneracy penalties; however, the selected checkpoints (best epoch by the selection score) typically avoided strongly saturated regimes, with near-zero saturation at the chosen epoch. Finally, the coverage proxy remained stable across splits, suggesting that the diversity-aware sampling strategy provided consistent tile diversity over time despite noisy optimization.
+
+% Overall, these monitoring results motivate the evaluation protocol used in the remainder of the chapter: final conclusions are based on OOF predictions computed at the selected checkpoints under the deterministic validation/inference settings described in the Methods, rather than on the last training epoch.
+
+
+% \begin{figure}[h]
+%   \centering
+%   \includegraphics[width=0.70\linewidth]{images_results/fig_raw_pooled_mean_train_vs_val_auc.png}
+%   \caption{Pooled raw ROC AUC over epochs.}
+%   \label{fig:raw_pooled_auc_curve}
+% \end{figure}
+
+% \begin{figure}[H]
+%   \centering
+%   \includegraphics[width=0.70\linewidth]{images_results/fig_raw_pooled_mean_train_vs_val_pr_auc.png}
+%   \caption{Pooled raw PR-AUC over epochs.}
+%   \label{fig:raw_pooled_prauc_curve}
+% \end{figure}
+
+% % Requires \usepackage{booktabs} in the preamble (optional but recommended)
+% \begin{table}[H]
+% \centering
+% \caption{Training stability and checkpointing diagnostics (median [IQR] across folds).}
+% \label{tab:training_stability_checkpointing}
+% \small
+% \setlength{\tabcolsep}{4pt}
+% \begin{tabular}{c c c c c c}
+% \hline
+% \textbf{Split} & \textbf{Best epoch} &
+% \textbf{Sat.\ epochs (\%)} & \textbf{Sat.\ at best} & \textbf{Coverage} \\
+% \hline
+% 1  & 18 [12, 23]  & 43 [40, 50] & 0.056 [0.000, 0.056] & 0.877 [0.866, 0.878] \\
+% 58 & 22 [22, 23] & 44 [41, 53] & 0.000 [0.000, 0.056] & 0.881 [0.868, 0.890] \\
+% \hline
+% \end{tabular}
+% \end{table}
+
+
+\section{Cross-Validation Performance on Training Cohort}
+\label{sec:cv_performance}
+
+We report patient-level out-of-fold (OOF) performance on the internal development cohort (N=89 patients; 50 HN and 39 LN) using patient-wise stratified group K-fold cross-validation with repeated splits, as described in Section~3.1. Here, ``out-of-fold'' means that each patient is evaluated only by a model that was trained without that patient, which provides an approximately unbiased estimate of generalization on the development cohort. For each configuration, we compute a single score per patient by averaging the OOF probabilities across the ensemble members (patient-level aggregation).
+We report two classes of metrics. \emph{Threshold-free discrimination metrics} quantify how well the model ranks HN above LN across all possible decision thresholds: ROC AUC measures the probability that a randomly chosen HN patient receives a higher score than a randomly chosen LN patient, while PR-AUC summarizes the precision--recall trade-off and is often more informative under class imbalance. \emph{Threshold-based operating-point metrics} evaluate a concrete decision rule at $p=0.5$: accuracy is the overall fraction of correct predictions; sensitivity (recall) is the fraction of HN patients correctly identified; specificity is the fraction of LN patients correctly identified; and the F1-score is the harmonic mean of precision and recall, highlighting performance on the positive (HN) class.
+To quantify uncertainty due to finite sample size, we compute patient-level bootstrap 95\% confidence intervals for ROC AUC and PR-AUC. The bootstrap is a resampling procedure in which we repeatedly sample $N$ patients \emph{with replacement} from the development cohort, recompute the metric on each resampled dataset, and use the empirical distribution of the resulting values to form an interval estimate. We report 95\% confidence intervals to provide a standard and interpretable range of plausible metric values under repeated sampling. We use 2000 bootstrap replicates as a practical trade-off: it is typically sufficient to obtain stable percentile-based intervals while keeping computation manageable.
+
+
+\paragraph{Raw vs rescaled ensemble scores.}
+We distinguish between two ensemble scores for each patient:
+(i) the \emph{raw} ensemble probability, $p_{\mathrm{raw}}$, obtained by directly averaging the exported OOF probabilities across ensemble members; and
+(ii) the \emph{rescaled} ensemble probability, $p_{\mathrm{resc}}$, obtained by applying the fold-wise logit standardization described in Section~3.5 (z-score on logits per ensemble member, sigmoid, then ensemble averaging).
+This rescaling is intended to reduce between-fold output-scale variability and to make a fixed operating point ($p=0.5$) more comparable across folds.
+Because the transformation is estimated and applied \emph{per fold} (and per ensemble member), it is \emph{not} a single global mapping applied uniformly to all patients. In other words, two patients coming from different validation folds may be rescaled by slightly different $(\mu,\sigma)$ parameters (Eq.~3.21), and therefore the rescaling is not guaranteed to preserve the global ordering of scores when we pool all OOF predictions together. As a result, even though each per-fold transform is \emph{monotone in the logit},meaning that within a given fold it preserves ordering (if a patient has a higher raw logit $\ell$ than another, then it will also have a higher standardized logit $(\ell-\mu)/\sigma$, and therefore a higher rescaled probability after the sigmoid),the overall cross-validated ranking after aggregation can change, and consequently ROC AUC and PR-AUC may differ between $p_{\mathrm{raw}}$ and $p_{\mathrm{resc}}$.
+
+\paragraph{Cross-validated discrimination and baseline comparison.}
+Table~\ref{tab:oof_rescaled_main} summarizes cross-validated performance using the rescaled ensemble probability $p_{\mathrm{resc}}$ (Section~\ref{sec:cv_performance}). We compare a CLAM baseline model (attention-based MIL) against two TransMIL-based models (transformer-based MIL) that differ only in the set of design choices used for the final training recipe.
+Overall, both TransMIL variants substantially outperform the CLAM baseline in terms of \emph{discrimination}: the ROC AUC increases from 0.629 (baseline) to approximately 0.80, indicating that the TransMIL models rank HN patients above LN patients much more reliably across thresholds. The PR-AUC shows the same qualitative improvement, consistent with better precision--recall trade-offs in this moderately imbalanced setting.
+Between the two TransMIL variants, discrimination is essentially unchanged in OOF (ROC AUC 0.803 for the simpler ``vanilla'' configuration vs.\ 0.806 for the final configuration). However, the final configuration yields the lowest Expected Calibration Error (ECE = 0.097), i.e.\ the best agreement between predicted probabilities and empirical outcome frequencies, and is therefore preferable when scores are interpreted probabilistically or used with a fixed operating threshold.
+
+\paragraph{Effect of rescaling and gap reduction with k-bags + penalties.}
+For transparency, Table~\ref{tab:oof_raw_diag} reports the same evaluation computed directly on $p_{\mathrm{raw}}$ (including Brier/ECE computed on the raw score).
+Rescaling produces a marked improvement for the TransMIL variants, both in pooled discrimination and probability quality: for vanilla, ROC AUC increases from 0.643 to 0.803 and Brier improves from 0.253 to 0.193; for the final model, ROC AUC increases from 0.688 to 0.806 and Brier improves from 0.219 to 0.191.
+Notably, the magnitude of the raw$\rightarrow$rescaled shift is smaller for the final model than for vanilla (e.g., $\Delta$AUC +0.118 vs.\ +0.160; $\Delta$Brier $-0.028$ vs.\ $-0.060$), consistent with reduced output-scale instability when combining k-bags inference and stability-oriented penalties.
+
+\paragraph{Association with continuous CD15 measurements.}
+For the subset of patients with available continuous \%CD15 measurements (n=81; Section~2.2), we quantify the monotonic association between the model score and CD15 using Spearman correlation (Figure~\ref{fig:cd15_scatter_clam}--\ref{fig:cd15_scatter_transmil_final}).
+The scatter plots are meant to be read as follows: each point corresponds to one patient; the x-axis reports the model-predicted probability (either $p_{\mathrm{raw}}$ or $p_{\mathrm{resc}}$), and the y-axis reports the measured \%CD15. A clearer upward trend indicates that higher predicted scores correspond to higher neutrophil signal, as expected given the HN/LN labeling. Points far from the overall trend (e.g., high score but low \%CD15) represent discordant cases and can indicate either model errors or biological/measurement variability.
+Qualitatively, the CLAM baseline shows a diffuse cloud with substantial overlap and only a weak upward tendency, whereas the TransMIL variants show a more coherent monotonic increase, consistent with the larger correlations reported below. After fold-wise rescaling, the trend becomes visually tighter, with fewer strongly discordant points, which aligns with the increase in Spearman correlation.
+The baseline CLAM model shows weak and non-significant association with CD15 ($\rho=0.117$, $p=0.297$ for $p_{\mathrm{raw}}$; $\rho=0.184$, $p=0.0999$ for $p_{\mathrm{resc}}$), whereas both TransMIL variants exhibit a significant positive monotonic trend.
+For TransMIL+CONCH vanilla, Spearman $\rho$ increases from 0.323 ($p=0.0033$) to 0.543 ($p=1.63\times10^{-7}$) after rescaling; for the final TransMIL+CONCH model, $\rho$ increases from 0.328 ($p=2.82\times10^{-3}$) to 0.482 ($p=5.17\times10^{-6}$).
+Overall, these results indicate that the transformer-based MIL configurations better capture the intended biological signal, and that fold-wise rescaling tends to strengthen the monotonic alignment with the underlying continuous CD15 readout.
+
+\paragraph{Limitations.}
+These OOF results are internal estimates on a single-center development cohort; the transferability of the rescaling scheme and the choice between $p_{\mathrm{raw}}$ and $p_{\mathrm{resc}}$ under distribution shift are evaluated separately on unseen cohorts in subsequent sections.
+
+% ----------------------- TABLES -----------------------
+
+\begin{table}[H]
+\centering
+\caption{Main OOF performance on the development cohort (patient-level aggregation) computed on \emph{rescaled} ensemble probabilities ($p_{\mathrm{resc}}$; Section~3.5). Discrimination metrics include patient-level bootstrap 95\% CI (2000 replicates). Threshold-based metrics are computed at $p=0.5$. Brier and ECE quantify probability quality (ECE computed with 10 equal-width bins as in Section~3.5).}
+\label{tab:oof_rescaled_main}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lcccccccc}
+\hline
+Model variant & ROC AUC (95\% CI) & PR-AUC (95\% CI) & Acc & F1 & Sens & Spec & Brier & ECE \\
+\hline
+CLAM + Lunit DINO ViT-S/8 (baseline) & 0.629 (0.510--0.743) & 0.735 (0.611--0.836) & 0.584 & 0.593 & 0.540 & 0.641 & 0.235 & 0.107 \\
+TransMIL + CONCH (vanilla) & 0.803 (0.710--0.885) & \textbf{0.870 (0.790--0.934)} & \textbf{0.775} & \textbf{0.778} & 0.700 & \textbf{0.872} & 0.193 & 0.147 \\
+\textbf{TransMIL + CONCH (k-bags + penalties; final)} & \textbf{0.806 (0.712--0.889)} & 0.855 (0.765--0.926) & 0.730 & 0.750 & \textbf{0.720} & 0.744 & \textbf{0.191} & \textbf{0.097} \\
+\hline
+\end{tabular}}
+\end{table}
+
+\begin{table}[H]
+\centering
+\caption{Diagnostic OOF performance computed directly on \emph{raw} ensemble probabilities ($p_{\mathrm{raw}}$). Discrimination metrics include patient-level bootstrap 95\% CI (2000 replicates). Threshold-based metrics are computed at $p=0.5$. Brier and ECE are computed on $p_{\mathrm{raw}}$ for a direct raw vs rescaled comparison (ECE computed with 10 equal-width bins as in Section~3.5).}
+\label{tab:oof_raw_diag}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lcccccccc}
+\hline
+Model variant & ROC AUC (95\% CI) & PR-AUC (95\% CI) & Acc & F1 & Sens & Spec & Brier & ECE \\
+\hline
+CLAM + Lunit DINO ViT-S/8 (baseline) & 0.602 (0.484--0.722) & 0.706 (0.583--0.821) & 0.596 & 0.710 & \textbf{0.880} & 0.231 & 0.237 & 0.088 \\
+TransMIL + CONCH (vanilla) & 0.643 (0.523--0.755) & \textbf{0.718 (0.596--0.835)} & 0.562 & 0.530 & 0.440 & \textbf{0.718} & 0.253 & 0.158 \\
+\textbf{TransMIL + CONCH (k-bags + penalties; final)} & \textbf{0.688 (0.567--0.799)} & 0.713 (0.587--0.842) & \textbf{0.663} & \textbf{0.717} & 0.760 & 0.538 & 0.219 & 0.119 \\
+\hline
+\end{tabular}}
+\end{table}
+
+% ----------------------- FIGURES (CD15 association) -----------------------
+% NOTE: place the following PNGs under your figures folder (e.g., images_results/) and keep the filenames unchanged.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.98\textwidth]{images_results/scatter_CD15_vs_praw_and_prescaled_CLAM_Lunit_BASELINE.png}
+  \caption{Baseline CLAM + Lunit: OOF patient-level score vs.\ continuous \%CD15 for the subset with available CD15 (n=81). The plot reports Spearman $\rho$ and $p$-value for both raw and rescaled scores.}
+  \label{fig:cd15_scatter_clam}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.98\textwidth]{images_results/scatter_CD15_vs_praw_and_prescaled_TransMIL_VANILLA.png}
+  \caption{TransMIL + CONCH (vanilla): OOF patient-level score vs.\ continuous \%CD15 (n=81). The plot reports Spearman $\rho$ and $p$-value for both raw and rescaled scores.}
+  \label{fig:cd15_scatter_transmil_vanilla}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.98\textwidth]{images_results/scatter_CD15_vs_praw_and_prescaled_TransMIL_FINAL.png}
+  \caption{TransMIL + CONCH with k-bags + penalties (final): OOF patient-level score vs.\ continuous \%CD15 (n=81). The plot reports Spearman $\rho$ and $p$-value for both raw and rescaled scores.}
+  \label{fig:cd15_scatter_transmil_final}
+\end{figure}
+
+\subsection{Training dynamics}
+\label{sec:training_dynamics_pooled}
+
+For completeness, we report pooled learning curves across all cross-validation runs (2 split seeds $\times$ 5 folds). These curves are provided only as qualitative monitoring: the primary results in this section are the OOF metrics computed at the selected checkpoints under the deterministic validation/inference protocol described in Sec.~3.4. The per-epoch validation signal is intentionally lightweight (single deterministic validation bag per patient) and therefore noisier than the multi-bag criterion used for checkpoint selection.
+
+Overall, the curves show a fast early improvement followed by a noisy plateau, which is expected under weak supervision and stochastic bag sampling; late-epoch fluctuations should be interpreted cautiously because fewer runs contribute after early stopping. The practical takeaway is simple: the model learns a usable signal early, but optimization is unstable enough that robust checkpoint selection (Sec.~3.4) is necessary.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.70\linewidth]{images_results/fig_raw_pooled_mean_train_vs_val_auc.png}
+  \caption{Pooled raw ROC AUC over epochs.}
+  \label{fig:raw_pooled_auc_curve}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=0.70\linewidth]{images_results/fig_raw_pooled_mean_train_vs_val_pr_auc.png}
+  \caption{Pooled raw PR-AUC over epochs.}
+  \label{fig:raw_pooled_prauc_curve}
+\end{figure}
+
+\section{Held-Out Test Performance and Generalization}
+\label{sec:heldout}
+
+To complement the internal cross-validation analysis, we evaluated generalization on an independent held-out set of $N=13$ patients (7 HN, 6 LN) that was excluded from model training and selection (Section~3.1). We report patient-level metrics computed from the exported ensemble probabilities using a fixed decision threshold $p=0.5$ for sensitivity/specificity/F\textsubscript{1}. As in the development analysis, we consider both (i) \emph{raw} ensemble probabilities and (ii) probabilities obtained after applying the per-model logit standardization (“rescaling”) learned from out-of-fold validation logits and then aggregated (Methods, Section~\ref{sec:calibration}).
+
+\begin{table}[!t]
+\centering
+\caption{Held-out test set performance ($N=13$) using \textbf{raw} ensemble probabilities with a fixed threshold $p=0.5$.}
+\label{tab:heldout_raw}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lcccccc}
+\hline
+Model variant & ROC AUC & Acc & F1 & Sens & Spec & (TN,FP,FN,TP) \\
+\hline
+CLAM + Lunit ViT-S (baseline) & 0.286 & 0.385 & 0.429 & 0.429 & 0.333 & (2,4,4,3) \\
+TransMIL + CONCH  (vanilla) & 0.643 & 0.615 & 0.444 & 0.286 & 1.000 & (6,0,5,2) \\
+\textbf{TransMIL + CONCH + k-bags inference + penalties (final)} & \textbf{0.833} & \textbf{0.769} & \textbf{0.727} & \textbf{0.571} & \textbf{1.000} & (6,0,3,4) \\
+\hline
+\end{tabular}
+}
+\end{table}
+
+Using raw probabilities (Table~\ref{tab:heldout_raw}), the final model achieved the strongest discrimination on the held-out cohort (ROC AUC $=0.833$) and the best threshold-based performance (accuracy $=0.769$, F\textsubscript{1}$=0.727$). Importantly, the improvement over the baselines is primarily driven by better recovery of HN cases: sensitivity increased from $0.429$ (CLAM baseline) and $0.286$ (TransMIL vanilla) to $0.571$ in the final model, while maintaining perfect specificity on this small set (6/6 LN correctly classified). The key message is that, on this particular held-out sample, the model made \emph{no} false-positive predictions among the 6 LN patients. However, because there are only 6 LN cases, the estimate of specificity has high uncertainty: observing 6/6 correct is compatible with a range of true specificities below 100\%. Therefore, we report this as an encouraging result but avoid over-interpreting it as evidence that the model will have zero false positives in larger or different cohorts.
+
+\begin{table}[!t]
+\centering
+\caption{Held-out test set performance ($N=13$) using \textbf{rescaled} ensemble probabilities with a fixed threshold $p=0.5$.}
+\label{tab:heldout_rescaled}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lcccccc}
+\hline
+Model variant & ROC AUC & Acc & F1 & Sens & Spec & (TN,FP,FN,TP) \\
+\hline
+CLAM + Lunit ViT-S (baseline) & 0.286 & 0.231 & 0.000 & 0.000 & 0.500 & (3,3,7,0) \\
+TransMIL + CONCH  (vanilla) & 0.643 & 0.538 & 0.700 & 1.000 & 0.000 & (0,6,0,7) \\
+\textbf{TransMIL + CONCH + k-bags inference + penalties (final)} & \textbf{0.833} & 0.615 & 0.444 & 0.286 & \textbf{1.000} & (6,0,5,2) \\
+\hline
+\end{tabular}
+}
+\end{table}
+
+Rescaling, while beneficial for probability quality on the development cohort (OOF CV), does \emph{not} uniformly improve threshold-based performance on this held-out set when using a fixed cutoff $p=0.5$ (Table~\ref{tab:heldout_rescaled}). In particular, the TransMIL vanilla model becomes severely shifted at the default threshold, predicting all cases as HN (sensitivity $=1.0$, specificity $=0.0$), illustrating how a fold-wise standardization learned on the training cohort can alter the \emph{absolute} probability scale out-of-domain. For the final model, the raw outputs remain clearly preferable on held-out patients (accuracy $0.769$ vs. $0.615$, F\textsubscript{1} $0.727$ vs. $0.444$), supporting the practical choice of using \emph{raw} probabilities for downstream analyses where generalization is the priority. Notably, the final model is also less sensitive to the raw$\leftrightarrow$rescaled shift than the vanilla configuration, consistent with the hypothesis that k-bags inference and penalty-based selection reduce output-scale instability.
+
+Overall, despite the intrinsic uncertainty of estimates at $N=13$, the held-out experiment provides a conservative stress test: it reproduces the same ranking observed in cross-validation (baseline $\rightarrow$ vanilla $\rightarrow$ final) and highlights a key nuance of the rescaling strategy: helpful for calibration \emph{in-distribution}, but not guaranteed to preserve optimal threshold behavior on small, independent test cohorts.
+
+
+\section{Slide-Level Explanations and Model Interpretability}
+\label{sec:heatmaps}
+
+To support qualitative model inspection, we provide WSI-level heatmap overlays that visualize the spatial distribution of model-assigned importance over the slide thumbnail (see Methods, Section~3.6). In this thesis, these visualizations are used as an exploratory debugging and communication tool: they have \emph{not} been systematically evaluated by pathologists, and they should not be interpreted as proof that the model is focusing on neutrophils or any specific histologic substrate.
+
+\paragraph{Paired qualitative comparison (baseline vs final).}
+We report illustrative \emph{paired} examples for five \textbf{HN} patients, where the baseline heatmap (CLAM + Lunit ViT-S) and the final heatmap (TransMIL + CONCH with k-bags + penalties) are generated from the \emph{same WSI} for each patient. Importantly, these examples include \emph{HN-only} cases; therefore, this section does not characterize visualization behavior on LN slides and does not constitute a systematic interpretability validation. Across these paired HN examples, baseline overlays often appear more spatially diffuse and/or exhibit stripe-like or linear activation patterns spanning large portions of tissue, whereas the final model more frequently shows localized high-importance regions.
+These qualitative differences are reported cautiously. In particular, visually ``structured'' attention maps (e.g., long stripes, periodic bands, or sharp boundaries aligned with the tiling grid) are not necessarily evidence that the model has discovered a meaningful histologic correlate. They can arise from several non-biological effects: (i) \emph{attention leakage}, where attention weights become overly smooth or correlate with global slide-level factors rather than specific tissue cues; (ii) \emph{tiling-grid effects}, where the patch extraction lattice (stride, overlap, padding, and edge handling) induces blocky or banded patterns in the aggregated heatmap; (iii) \emph{tissue folds or sectioning artifacts}, which create high-contrast structures (creased regions, thick tissue, tears) that can be spuriously associated with the label; and (iv) \emph{scanner- or site-related artifacts} (focus variation, compression, staining/illumination gradients) that are correlated with cohort or acquisition conditions. Therefore, we interpret localized ``hot spots'' as hypotheses for further review (e.g., targeted inspection of tiles) rather than as confirmed biological localization of neutrophils or other specific substrates.
+
+These figures should be read as thumbnail-level summaries of \emph{relative} tile importance. They are intended for visual inspection and hypothesis generation (e.g., to decide which tiles to zoom into), not as quantitative interpretability validation: we do not claim that highlighted regions are confirmed neutrophil-rich areas, and we do not provide pathologist-verified localization metrics. Additionally, some baseline panels include a small textual header automatically added by the visualization script; if a probability value is shown there, it is a screenshot artifact and should not be used for reporting. The authoritative probabilities for these cases are those listed in Table~\ref{tab:heatmap_patients}.
+
+These figures should be read as thumbnail-level summaries of \emph{relative} tile importance. They are intended for visual inspection and hypothesis generation (e.g., to decide which tiles to zoom into), not as quantitative interpretability validation: we do not claim that highlighted regions are confirmed neutrophil-rich areas, and we do not provide pathologist-verified localization metrics. Additionally, some baseline panels include a small textual header automatically added by the visualization script; if a probability value is shown there, it is a screenshot artifact and should not be used for reporting. The authoritative probabilities for these cases are those listed in Table~\ref{tab:heatmap_patients}.
+
+\begin{table}[H]
+\centering
+\caption{Illustrative HN cases used for paired heatmap visualization. Reported probabilities are slide-level outputs from each model family. Baseline probabilities are derived from the reference CSV.}
+\label{tab:heatmap_patients}
+% Il comando resizebox scala tutto per farlo entrare nella larghezza pagina
+\resizebox{\textwidth}{!}{%
+    \begin{tabular}{l c c c c c c}
+    \hline
+    \textbf{patient id} & \textbf{\%CD15} & \textbf{y} &
+    \textbf{baseline $p_{\text{raw}}$} & \textbf{baseline $p_{\text{rescaled}}$} &
+    \textbf{final $p_{\text{raw}}$} & \textbf{final $p_{\text{rescaled}}$} \\
+    \hline
+    23-I-00608 & 94.5 & HN & 0.426 & 0.374 & 0.628 & 0.668 \\
+    23-I-20495 & 71.0 & HN & 0.557 & 0.431 & 0.552 & 0.456 \\
+    23-I-21022 & 90.8 & HN & 0.547 & 0.479 & 0.568 & 0.489 \\
+    24-I-01700 & 71.0 & HN & 0.721 & 0.678 & 0.842 & 0.794 \\
+    24-I-04390 & 69.4 & HN & 0.671 & 0.642 & 0.787 & 0.729 \\
+    \hline
+    \end{tabular}%
+}
+\end{table}
+
+\begin{figure}[H]
+\centering
+\setlength{\tabcolsep}{3pt}
+\renewcommand{\arraystretch}{0.85}
+\begin{tabular}{@{}p{0.485\textwidth}p{0.485\textwidth}@{}}
+    \centering\textbf{Baseline: CLAM + Lunit ViT-S} & \centering\textbf{Final: TransMIL + CONCH  (k-bags + penalties)} \\
+    
+    % --- Row 1: Patient 23-I-00608 ---
+    \multicolumn{2}{c}{\scriptsize\textbf{Patient 23-I-00608}} \\
+    \centering\includegraphics[width=\linewidth,height=0.18\textheight,keepaspectratio]{images_results/heatmaps/Baseline-23-i-00608.png} & 
+    \centering\includegraphics[width=\linewidth,height=0.18\textheight,keepaspectratio]{images_results/heatmaps/Final-23-i-00608.png} \\
+    
+    % --- Row 2: Patient 23-I-20495 ---
+    \multicolumn{2}{c}{\scriptsize\textbf{Patient 23-I-20495}} \\
+    \centering\includegraphics[width=\linewidth,height=0.18\textheight,keepaspectratio]{images_results/heatmaps/Baseline-23-i-20495.png} & 
+    \centering\includegraphics[width=\linewidth,height=0.18\textheight,keepaspectratio]{images_results/heatmaps/Final-23-i-20495.png} \\
+    
+    % --- Row 3: Patient 23-I-21022 ---
+    \multicolumn{2}{c}{\scriptsize\textbf{Patient 23-I-21022}} \\
+    \centering\includegraphics[width=\linewidth,height=0.18\textheight,keepaspectratio]{images_results/heatmaps/Baseline-23-i-21022.png} & 
+    \centering\includegraphics[width=\linewidth,height=0.18\textheight,keepaspectratio]{images_results/heatmaps/Final-23-i-21022.png} \\
+    
+\end{tabular}
+\caption{Paired WSI-level heatmap overlays for three illustrative HN cases (same WSI per row).}
+\label{fig:paired_heatmaps_a}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\setlength{\tabcolsep}{3pt}
+\renewcommand{\arraystretch}{0.85}
+\begin{tabular}{@{}p{0.485\textwidth}p{0.485\textwidth}@{}}
+    \centering\textbf{Baseline: CLAM + Lunit ViT-S} & \centering\textbf{Final: TransMIL + CONCH  (k-bags + penalties)} \\
+    
+    % --- Row 4: Patient 24-I-01700 ---
+    \multicolumn{2}{c}{\scriptsize\textbf{Patient 24-I-01700}} \\
+    \centering\includegraphics[width=\linewidth,height=0.22\textheight,keepaspectratio]{images_results/heatmaps/Baseline-24-i-01700.png} & 
+    \centering\includegraphics[width=\linewidth,height=0.22\textheight,keepaspectratio]{images_results/heatmaps/Final-24-i-01700.png} \\
+    
+    % --- Row 5: Patient 24-I-04390 ---
+    \multicolumn{2}{c}{\scriptsize\textbf{Patient 24-I-04390}} \\
+    \centering\includegraphics[width=\linewidth,height=0.22\textheight,keepaspectratio]{images_results/heatmaps/Baseline-24-i-04390.png} & 
+    \centering\includegraphics[width=\linewidth,height=0.22\textheight,keepaspectratio]{images_results/heatmaps/Final-24-i-04390.png} \\
+    
+\end{tabular}
+\caption{Paired WSI-level heatmap overlays for two additional illustrative HN cases (same WSI per row).}
+\label{fig:paired_heatmaps_b}
+\end{figure}
+
+% \caption{Paired WSI thumbnail heatmap overlays for five HN cases. Left column: baseline (CLAM + Lunit ViT-S/patch16). Right column: final (TransMIL + CONCH patch encoder with k-bags + penalties). Brighter regions indicate higher model-assigned importance on the slide thumbnail. In these examples, baseline overlays can appear more diffuse and may show stripe-like/linear patterns (e.g., 23-i-20495), whereas the final model more often concentrates high-importance regions into localized areas, albeit with block-like structure consistent with tile/bag sampling. These visualizations are qualitative and are not validated as faithful explanations of the decision process.}
+% \label{fig:heatmaps_paired_examples}
+% \end{figure}
+
+\paragraph{Limitations.}
+These overlays are qualitative examples (five cases only), restricted to HN slides, and have not been scored or reviewed by pathologists in this thesis. Moreover, attention/saliency visualizations do not necessarily provide faithful explanations of a model’s decision mechanism and should be interpreted with caution \cite{jain2019attention,adebayo2018sanity}.
+
+\paragraph{Outlook.}
+Future work will integrate pathologist-in-the-loop review and quantitative localization analyses (e.g., consistency across replicates, artifact sensitivity tests, and spatial concentration metrics) to better assess whether highlighted regions correspond to clinically meaningful tissue patterns or to spurious correlates.
+
+
+\section{External Cohort Validation: TCGA Survival Analysis}
+\label{sec:tcga_survival_results}
+
+We evaluated whether the final slide-based model produces risk scores that are associated with clinical outcomes on an external cohort from The Cancer Genome Atlas (TCGA), using disease-free survival (DFS) as endpoint. The survival analysis was conducted on the subset of TCGA patients for which both a model prediction score and DFS follow-up were available. The resulting analysis cohort comprised $N=166$ patients, with 21 DFS events and 145 censored observations. Median follow-up was 27.0 months (IQR 19.8; range 0.53--148.0 months).
+To align with our internal analysis protocol, we report horizon-specific DFS analyses using administrative censoring at 24, 36, and 60 months.
+
+\subsection{Kaplan--Meier analysis at fixed cut-off}
+\label{sec:tcga_km_cut05}
+
+We first performed Kaplan--Meier (KM) analyses by stratifying patients using the same probability threshold adopted in our primary experiments, i.e., a fixed cut-off of 0.5. This split produced a low-score group ($p < 0.5$; $n=68$) and a high-score group ($p \ge 0.5$; $n=98$). Figure~\ref{fig:tcga_km_cut05_panels} shows KM curves with risk tables under administrative censoring at 24, 36, and 60 months.
+
+Across all horizons, the high-score group showed poorer DFS compared to the low-score group. This separation is supported by log-rank tests at each horizon (Table~\ref{tab:tcga_km_stats}): $p=0.0301$ at 24 months, $p=0.0332$ at 36 months, and $p=0.0401$ at 60 months. The difference is also visible in the event distribution within each horizon: for instance, by 60 months there were 16 DFS events in the high-score group versus 4 in the low-score group (20 events total within 60 months, out of 21 total events overall).
+
+\begin{figure}[p]
+  \centering
+
+  \begin{subfigure}{0.95\textwidth}
+    \centering
+    \includegraphics[width=\linewidth,height=0.28\textheight,keepaspectratio]{images_results/fig_tcga_dfs_km_H24_cut05.png}
+    \caption{Horizon 24 months}
+  \end{subfigure}
+
+  \vspace{0.4em}
+
+  \begin{subfigure}{0.95\textwidth}
+    \centering
+    \includegraphics[width=\linewidth,height=0.28\textheight,keepaspectratio]{images_results/fig_tcga_dfs_km_H36_cut05.png}
+    \caption{Horizon 36 months}
+  \end{subfigure}
+
+  \vspace{0.4em}
+
+  \begin{subfigure}{0.95\textwidth}
+    \centering
+    \includegraphics[width=\linewidth,height=0.28\textheight,keepaspectratio]{images_results/fig_tcga_dfs_km_H60_cut05.png}
+    \caption{Horizon 60 months}
+  \end{subfigure}
+
+  \caption{TCGA DFS Kaplan--Meier curves stratified by the fixed model score cut-off of 0.5 (main analysis). Curves are shown under administrative censoring at 24, 36, and 60 months, each with risk table.}
+  \label{fig:tcga_km_cut05_panels}
+\end{figure}
+
+
+\begin{table}[H]
+\centering
+\caption{Horizon-specific TCGA DFS log-rank tests using the fixed cut-off of 0.5 (main analysis). Event counts refer to events observed within each administrative censoring horizon.}
+\label{tab:tcga_km_stats}
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{ccccccc}
+\hline
+Horizon & Cut & $n_{\text{low}}$ & $n_{\text{high}}$ & Events$_{\text{low}}$ & Events$_{\text{high}}$ & Log-rank $p$ \\
+\hline
+24 & 0.5 & 68 & 98 & 2 & 12 & 0.0301 \\
+36 & 0.5 & 68 & 98 & 3 & 14 & 0.0332 \\
+60 & 0.5 & 68 & 98 & 4 & 16 & 0.0401 \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{Data-driven cut-off comparison}
+\label{sec:tcga_cutpoint_exploratory}
+
+To assess whether the fixed cut-off of 0.5 is close to the separation suggested by the DFS data itself, we computed an exploratory, horizon-specific cutpoint using \texttt{surv\_cutpoint} with a minimum group proportion constraint of 0.25 (to avoid degenerate splits). The resulting cutpoint was consistent across horizons: $p^\star = 0.5044$, i.e., within 0.0044 of 0.5 (Table~\ref{tab:tcga_cutpoint}).
+This analysis is reported solely as a proximity check: because the cutpoint is estimated from the same survival outcomes used for evaluation, the associated log-rank $p$-values are optimistically biased and should not be used to strengthen inferential claims.
+
+\begin{table}[H]
+\centering
+\caption{Exploratory comparison between the fixed cut-off (0.5) and the data-driven cutpoint obtained via \texttt{surv\_cutpoint} (minprop=0.25).}
+\label{tab:tcga_cutpoint}
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{cccc}
+\hline
+Horizon & Fixed cut & Cutpoint $p^\star$ & $|p^\star - 0.5|$ \\
+\hline
+24 & 0.5 & 0.5044 & 0.0044 \\
+36 & 0.5 & 0.5044 & 0.0044 \\
+60 & 0.5 & 0.5044 & 0.0044 \\
+\hline
+\end{tabular}
+\end{table}
+
+\begin{figure}[p] % pagina dedicata ai float, non "qui e ora"
+  \centering
+
+  \begin{subfigure}{0.95\textwidth}
+    \centering
+    \includegraphics[width=\linewidth,height=0.28\textheight,keepaspectratio]{images_results/fig_tcga_dfs_km_H24_cutopt.png}
+    \caption{Horizon 24 months}
+  \end{subfigure}
+
+  \vspace{0.4em}
+
+  \begin{subfigure}{0.95\textwidth}
+    \centering
+    \includegraphics[width=\linewidth,height=0.28\textheight,keepaspectratio]{images_results/fig_tcga_dfs_km_H36_cutopt.png}
+    \caption{Horizon 36 months}
+  \end{subfigure}
+
+  \vspace{0.4em}
+
+  \begin{subfigure}{0.95\textwidth}
+    \centering
+    \includegraphics[width=\linewidth,height=0.28\textheight,keepaspectratio]{images_results/fig_tcga_dfs_km_H60_cutopt.png}
+    \caption{Horizon 60 months}
+  \end{subfigure}
+
+  \caption{Exploratory TCGA DFS Kaplan--Meier curves using the data-driven cutpoint $p^\star=0.5044$.}
+  \label{fig:tcga_km_cutopt_panels}
+\end{figure}
+
+
+\subsection{Cox proportional hazards models}
+\label{sec:tcga_cox}
+
+We next tested association with DFS using Cox proportional hazards regression, treating the model score as a continuous predictor. We report hazard ratios (HR) per +0.1 increase in predicted probability. We fitted univariate models (score only) and multivariate models adjusting for AJCC pathologic stage, age at diagnosis, and sex. Due to missing covariates, multivariate models were fitted on $N=159$ patients (with 13/16/19 events within 24/36/60 months, respectively), while univariate models used all $N=166$ patients.
+
+Across horizons, the continuous-score Cox models indicated a positive association trend (HR $>1$), but did not reach conventional statistical significance at the 0.05 level (Table~\ref{tab:tcga_cox_score}). Proportional hazards checks based on Schoenfeld residuals did not suggest major violations for the score (score-specific $p$-values in the range 0.40--0.88 across models and horizons).
+
+\begin{table}[H]
+\centering
+\caption{Cox models on TCGA DFS under administrative censoring at 24/36/60 months. HR is reported per +0.1 increase in model score. Multivariate models adjust for AJCC stage, age, and sex.}
+\label{tab:tcga_cox_score}
+\small
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{l l c c c c}
+\hline
+Horizon & Model & $N$ & Events & HR (95\% CI) & $p$ \\
+\hline
+24 & Univ. & 166 & 14 & 1.464 (0.948--2.262) & 0.0858 \\
+24 & Multiv. & 159 & 13 & 1.692 (0.987--2.899) & 0.0556 \\
+36 & Univ. & 166 & 17 & 1.343 (0.903--1.998) & 0.1458 \\
+36 & Multiv. & 159 & 16 & 1.525 (0.930--2.501) & 0.0947 \\
+60 & Univ. & 166 & 20 & 1.340 (0.936--1.918) & 0.1094 \\
+60 & Multiv. & 159 & 19 & 1.369 (0.896--2.092) & 0.1464 \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsection{Interpretation and limitations}
+\label{sec:tcga_interpretation}
+
+Overall, the fixed-threshold KM analyses show a consistent separation between predicted low- and high-score groups across 24/36/60-month horizons, while Cox models on the continuous score show a weaker signal with wide confidence intervals. This discrepancy is plausible under limited event counts and potential non-linear or threshold-like relationships between the score and hazard: group-wise comparisons can sometimes appear stronger than a strictly log-linear effect assumption in Cox regression. Given the modest number of events (21 overall; 14--20 within the evaluated horizons), these findings should be interpreted as evidence of an association signal rather than a definitive survival model, and they motivate further validation on larger external cohorts.
+

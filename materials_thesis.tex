@@ -1,0 +1,134 @@
+\chapter{Materials and Dataset}
+\label{ch:materials_dataset}
+
+This study uses a retrospective collection of colorectal cancer (CRC) pathology data obtained from the institutional biobank of the European Institute of Oncology under the clinical study IEO1341 MITICO led by Dr. Nezi. The dataset comprises two components: (1) digitized hematoxylin and eosin (H\&E) whole-slide images (WSIs) of tumor tissue, and (2) patient-level immunological measurements linked to the slides. All H\&E slides were prepared from formalin-fixed paraffin-embedded tissue blocks in routine diagnostics and then scanned at high resolution. Scanning was performed with a Leica Aperio digital slide scanner at \textbf{40×} magnification producing an approximate spatial resolution of 0.25 $\mu$m/pixel. Each WSI is stored in pyramidal TIFF format (Aperio \texttt{.svs}), with downsampled image levels at 20× and 10× for efficient viewing. These acquisition details are reported to support reproducibility and compatibility with the preprocessing pipeline described later. The use of archival slides for research was approved by the relevant institutional review board, and all patient data were pseudonymized to protect privacy. In particular, patients from the MITICO clinical study were assigned coded identifiers (e.g., \emph{1341-XXX}, where “1341” denotes the study protocol) such that no personally identifiable information is present in the research files.
+
+\section{Cohort definition and criteria}
+\label{sec:cohorts}
+The dataset is organized into three cohorts reflecting data availability and the model evaluation protocol. An overview of the two labeled cohorts (development and held-out) and their role in the pipeline is given in Table~\ref{tab:cohort_overview}. In total, there are 127 unique patients with at least one WSI available; of these, 102 patients have an associated immune label (binary high/low neutrophil status, defined in Section~\ref{sec:label_def}). No patient appears in more than one cohort.
+
+\paragraph{Cohort partitioning and roles.}
+\begin{itemize}
+    \item \textbf{Training WSI pool (full slide set, partially labeled):} 114 patients with at least one H\&E WSI, yielding 468 scanned slides in total. This pool represents the full set of WSIs available for model development. Not all cases in this pool have immune labels. Labeled cases from here form the development set below, while unlabeled cases are set aside (i.e., unused for supervised learning).
+    \item \textbf{Development cohort:} 89 patients from the above pool for whom a valid immune label is available. These patients constitute the supervised training and validation set used in method development. In total, they contribute 317 WSIs.
+    \item \textbf{Held-out test cohort (labeled):} 13 patients (52 WSIs) that are kept completely held-out for final evaluation. These cases have labels but are never used during model training or validation. They are managed via a separate manifest and only used to assess the generalization of the final model. 
+\end{itemize}
+
+In summary, the development cohort and the held-out cohort are \emph{disjoint}: no patient (and thus no slide) overlaps between them. The 25 patients in the training WSI pool who do not have labels are excluded from any supervised learning; their 151 slides (468 total in the pool minus 317 in the development cohort) were still processed and indexed, providing a broader basis for potential future analyses (e.g., unsupervised studies outside the scope of this thesis).
+
+\paragraph{Inclusion criteria.}
+A patient case is included in the labeled cohorts (development or held-out) only if all of the following criteria are met:
+\begin{itemize}
+    \item \textbf{WSI availability:} At least one diagnostic H\&E WSI is present and successfully processed into tiles. In practice, this means a slide image exists and a corresponding tile index file was generated.
+    \item \textbf{Immune label availability:} A valid patient-level immune measurement is available, allowing assignment of a binary label (High vs Low neutrophils; see Section~\ref{sec:label_def}).
+    \item \textbf{Feature extraction success:} Each WSI for that patient has been processed through the feature extraction pipeline (producing a tile embedding file). All such feature files must be present and pass basic integrity checks; implementation details are provided in Chapter~\ref{ch:methods}.
+\end{itemize}
+
+If any of these criteria failed (e.g., a slide file was missing or corrupted, or the patient’s immune assay was not available), the patient was excluded from the development/held-out cohorts.
+
+\paragraph{Exclusion criteria and quality safeguards.}
+Several automatic exclusion rules and safeguards are applied to ensure data quality and avoid bias:
+\begin{itemize}
+    \item \textbf{Unlabeled cases:} Patients without the immune label (25 out of the 114 in the slide pool) are excluded from supervised training/validation.
+    \item \textbf{Missing tiles or features:} If a WSI could not be tiled (e.g., if no tile index file was produced due to a processing error) or if no feature file was generated, that slide cannot contribute to the MIL dataset and is excluded upstream. In our dataset, 468 slides were indexed in the full pool, but features passed QC for 466 slides; the two missing feature files occurred in unlabeled patients.
+    \item \textbf{Low-information regions:} Tiles that are mostly background or low quality are filtered out during tile indexing and QC using a fixed set of parameters applied consistently across slides. We report the full filtering procedure and thresholds in Chapter~\ref{ch:methods}.
+    \item \textbf{Slide-type consistency:} As an operational safeguard, slides were tagged during data curation (e.g., primary tumor vs. lymph node tissue). The pipeline can flag any patient that has heterogeneous slide types (for example, if a patient had both primary tumor slides and metastatic lymph node slides, which could confound the immune readout). In this dataset, all slides per patient were of consistent type, so no patient was excluded for mixed content; however, this check helps ensure that the model’s input (tile set) aligns with the intended label definition.
+\end{itemize}
+
+\paragraph{Cohort statistics.}
+Table~\ref{tab:cohort_overview} summarizes the size of each cohort and key properties. In the development cohort (89 patients), the binary class distribution is 50 High-Neutrophil (HN) vs 39 Low-Neutrophil (LN) patients (HN prevalence 56.2\%). In the held-out cohort (13 patients), the HN prevalence is approximately 53.8\% (7 HN vs 6 LN). All performance metrics in this thesis will refer to the development cohort (via cross-validation) unless explicitly evaluating the held-out set.
+
+\begin{table}[H]
+\centering
+\caption{Overview of patient cohorts and their roles in the pipeline.}
+\label{tab:cohort_overview}
+% \begin{tabular}{@{}lccc@{}}
+% \toprule
+% \textbf{Cohort} & \textbf{Training WSI Pool} & \textbf{Development (labeled)} & \textbf{Held-out Inference} \\
+% \midrule
+% Patients (N) & 114 & 89 & 13 \\
+% Patients with label & 89 / 114 & 89 / 89 & 13 / 13 \\
+% HN : LN distribution & N/A & 50 : 39 & 7 : 6 \\
+% Total WSIs (slides) & 468 & 317 & 52 \\
+% WSIs per patient, median [p10, p90] & 3 [2.8, 5.0] & 3 [3.0, 5.0] & 4 [2, 5] \\
+% Total tiles (post-QC) & 1,413,599 (indexed) & 1,020,411 & – \\
+% Tiles per patient, median [p10, p90] & – & 10,027 [6,250, 17,908] & – \\
+% \bottomrule
+% \end{tabular}
+% \end{table}
+% \resizebox{\textwidth}{!}{%
+%     \begin{tabular}{@{}lccc@{}}
+%     \toprule
+%     \textbf{Cohort} & \textbf{Training WSI Pool} & \textbf{Development (labeled)} & \textbf{Held-out Inference} \\
+%     \midrule
+%     Patients (N) & 114 & 89 & 13 \\
+%     Patients with label & 89 / 114 & 89 / 89 & 13 / 13 \\
+%     HN : LN distribution & 50 : 39 & 50 : 39 & 7 : 6 \\
+%     Total WSIs (slides) & 468 & 317 & 52 \\
+%     WSIs per patient, median [p10, p90] & 3 [2.8, 5.0] & 3 [3.0, 5.0] & 4 [2, 5] \\
+%     Total tiles (post-QC) & 1,413,599 (indexed) & 1,020,411 & 126,151 \\
+%     Tiles per patient, median [p10, p90] & – & 10,027 [6,250, 17,908] & 9,224 [7,063, 13331] \\
+%     \bottomrule
+%     \end{tabular}%
+% }
+% \end{table}
+
+\resizebox{\textwidth}{!}{%
+    \begin{tabular}{@{}lccc@{}}
+    \toprule
+    \textbf{Cohort} & \textbf{Development (labeled)} & \textbf{Held-out test (labeled)} \\
+    \midrule
+    Patients (N) & 89 & 13 \\
+    Patients with label & 89 / 89 & 13 / 13 \\
+    HN : LN distribution & 50 : 39 & 7 : 6 \\
+    Total WSIs (slides) & 317 & 52 \\
+    WSIs per patient, median [p10, p90] & 3 [3.0, 5.0] & 4 [2, 5] \\
+    Total tiles (post-QC) & 1,020,411 & 126,151 \\
+    Tiles per patient, median [p10, p90] & 10,027 [6,250, 17,908] & 9,224 [7,063, 13,331] \\
+    \bottomrule
+    \end{tabular}%
+}
+\end{table}
+
+% \section{WSI processing and feature extraction (overview)}
+% \label{sec:tiling}
+% Digitized whole-slide images are extremely large (gigapixel-scale), so an essential preprocessing step is to break each WSI into manageable regions (\emph{tiles}) before analysis. We performed this tiling and feature extraction with a reproducible pipeline (detailed in Chapter~\ref{ch:methods}); here we summarize the process and its outcome.
+
+% \paragraph{Tiling and quality filtering.} All WSIs were processed using a deterministic tiling procedure. First, a low-resolution tissue probability mask was computed for each slide to identify tissue regions (using Otsu’s threshold on a 4.0~$\mu$m/px thumbnail). We then tessellated each WSI at 0.5~$\mu$m/pixel resolution into square tiles of size 512$\times$512 pixels, corresponding to approximately $256\times256~\mu$m in physical units. Tiles were extracted on a regular grid with stride equal to the tile size (512 px), i.e. \textbf{non-overlapping} tiles by default. For each candidate tile, the tissue mask was used to calculate a \emph{tissue fraction} (proportion of the tile area containing tissue). Only tiles with tissue fraction $\ge 0.40$ were retained, which removes mostly-empty background tiles. After tile indexing, we applied an appearance-based filter to eliminate any obviously bad tiles: specifically, tiles with mean RGB intensity $<0.50$ (very dark) or RGB standard deviation $<0.08$ (almost blank) were discarded. These aggressive thresholds resulted in only a small percentage of tiles being removed (on average 0.12\% of tiles per slide in the development set), since most tiles that pass the tissue mask are of acceptable quality. No overlap between tiles was used (stride = tile size) in the primary tiling to reduce data redundancy, given the project constraint on data volume, though we note this means very small structures could fall on tile boundaries (we address this in potential extensions). The tiling and QC process yielded a total of \textbf{1.02 million} usable tiles from the 317 WSIs of the development cohort. The median number of tiles per patient (summed over that patient’s slides) is 10,027 (see Table~\ref{tab:cohort_overview}), with a 10th–90th percentile range of roughly 6.25k to 17.9k tiles. The smallest patient (by tissue area) had 1,755 tiles, whereas the largest had over 36k tiles.
+
+% \paragraph{Feature embedding generation.} Instead of feeding image tiles directly into an MIL model (which would be computationally prohibitive for millions of tiles), we adopted an \emph{offline feature extraction} approach. Each tile is processed by a pretrained convolutional neural network / transformer to produce a compact feature vector, which is then used for all downstream analyses. In our pipeline, we used a modern transformer-based encoder trained on pathology data: specifically, we used the \textbf{TITAN-CONCH} model (a ViT architecture from \cite{mahmood2024titan}) to embed tiles into vectors of dimension $D=768$. This model was chosen for its state-of-the-art performance and was kept \textit{frozen} (its weights fixed) in our experiments. All tiles at 0.5~$\mu$m/px were fed through this encoder (in batches, using HPC resources), yielding one 768-dimensional feature vector per tile. We did not apply any stain normalization to the raw images prior to feature extraction; instead, we rely on the model’s internal color normalization and on learning-based normalization later. After extraction, a feature-level QC was performed: every feature tensor file was checked for the correct dimensionality and scanned for any invalid values. In practice, these checks passed for 466 of the 468 indexed slides; two slides from unlabeled patients failed to produce features (likely due to file issues) and were therefore omitted from any patient bag. All feature tensors from labeled cohort slides had valid values and matching dimensions, confirming the consistency of the embedding process. Finally, to reduce slide-specific biases in feature space (which can arise from stain variations), we applied a simple normalization to the features: for each slide, we subtracted the mean feature vector (over all its tiles) and L2-normalized each tile’s feature vector. This \emph{slide-centering and normalization} is a linear rescaling that reduces slide-specific shifts in feature space and helps the MIL model focus on relative differences within a slide. We emphasize that all these steps – tiling, filtering, feature extraction, and normalization – are deterministic and reproducible given the fixed parameters. The resulting dataset for model development consists of 89 bags (patients) each containing anywhere from $\sim$1.7k to $\sim$37k 768-dimensional tile feature vectors, with an overall total of 1,020,411 tile vectors.
+
+\section{Label definition }
+\label{sec:label_def}
+Each patient in the supervised cohorts has an associated immunological measurement which serves as the prediction target for our models. The measurement is the percentage of a specific immune cell subset within the tumor microenvironment, defined as “CD15-positive cells among CD66\textsuperscript{+}CD10\textsuperscript{+} tumor-associated cells.” This metric, derived from flow cytometry (FACSort analysis performed on dissociated tumor samples in the IEO immunology lab), is treated as a patient-level property, meaning it does not tell us where the cells are in the tissue, only the overall proportion in the sample. We describe both the continuous form of this target and the binary label derived from it.
+
+\paragraph{Continuous immunoscore target.}
+For a subset of patients, the raw continuous percentage value is available. We denote this value as $r_i$ for patient $i$ (ranging from 0 to 100). In our data, 81 patients in the training pool have a recorded $r_i$. The distribution of $r_i$ is broad: the median is 53.5\%, with an interquartile range of 30.3\% to 78.8\%. The values span nearly the full range (minimum 0.78\%, maximum 100\%). When using this as a target for analysis, we normalize it to a 0--1 scale as
+\begin{equation}\label{eq:immunoscore_norm}
+\tilde{r}_i = \frac{r_i}{100}~.
+\end{equation}
+Although the primary focus of this thesis is classification, this continuous “immunoscore” could be used for auxiliary regression tasks or correlation analysis (we will briefly explore this in Appendix~B).
+
+\paragraph{Binary label (High vs Low neutrophils).}
+The primary outcome of interest is a binary categorization of patients into \textbf{High Neutrophil (HN)} vs. \textbf{Low Neutrophil (LN)} groups. We define this label based on the threshold $r_i = 50\%$. Formally:
+\begin{equation}\label{eq:hn_cutoff}
+y_i = 
+\begin{cases} 
+1, & \text{if } r_i \ge 50\%, \\[6pt]
+0, & \text{if } r_i < 50\%, 
+\end{cases}
+\end{equation}
+where $y_i = 1$ corresponds to the HN class and $y_i = 0$ to the LN class. In our dataset, one patient’s value fell exactly on the threshold ($r_i = 50.0\%$). A priori, we established a deterministic rule to handle this borderline case: in this cohort, that tie was broken by assigning $y_i = 1$ (HN). This yields a total of 50 HN and 39 LN patients in the development cohort (out of 89), as noted earlier. The prevalence of the positive class (HN) is therefore 56.2\%. In the held-out cohort of 13 patients, applying the same threshold resulted in 7 HN and 6 LN cases (53.8\% HN).
+
+It is worth emphasizing that these labels are provided at the \emph{patient level}. That is, each patient (and by extension, all WSIs and tiles from that patient) is assigned a single HN or LN label. The learning setting is thus weakly-supervised: the model sees many tile-level inputs per patient but only an aggregate label indicating the patient’s immune status. There is no location-wise ground truth for where neutrophils are in the image; the hope is that the model can infer relevant histological patterns that correlate with the patient’s overall immunoscore.
+
+\section{External Cohort: TCGA}
+An external cohort of colorectal cancer cases was obtained from TCGA via cBioPortal, using the GDC studies Colon Adenocarcinoma (COAD) and Rectal Adenocarcinoma (READ). These two studies comprise 463 and 173 patients, respectively, for a total of 633 cases. After applying our selection criteria (see below), 166 TCGA patients remained in the survival analysis. The corresponding data include digitized H\&E WSIs and clinical annotations for these patients. Importantly, TCGA image data are provided in pyramidal Aperio SVS format (as archived on TCIA).
+
+% The clinical metadata were retrieved from the TCGA Pan-Cancer COAD/READ data files (e.g. \texttt{coadread_tcga_pan_can_atlas_2018_clinical_data.tsv}), which include disease-free survival outcomes.
+
+Since the TCGA cohort has no CD15-derived immune labels (HN vs LN), it is not used for validating the classifier. Instead, we apply our trained model in inference mode on these WSIs to generate predicted HN-risk probabilities for each patient. These predicted probabilities are then analyzed in relation to survival. This is therefore a label-free exploratory analysis: we do not compare to ground-truth HN/LN classes (which are unavailable), but investigate whether higher predicted neutrophil-rich risk scores correlate with poorer patient outcomes.
+
+\paragraph{Inclusion and exclusion criteria.} We filtered TCGA cases to ensure data completeness and to restrict the analysis to comparable primary disease. Inclusion criteria were: (i) disease type annotated as adenomas or adenocarcinomas; (ii) primary tumor samples only (non-metastatic); (iii) primary site in colon or rectum (COAD/READ); (iv) availability of disease-free survival (DFS) follow-up (event and time); and (v) availability of a diagnostic H\&E WSI in \texttt{.svs} format (i.e., excluding non-diagnostic tissue slides), together with successful access to the corresponding WSI-derived feature data. Exclusion criteria included missing DFS information, metastatic samples, missing or non-\texttt{.svs} slides, and failures in WSI/feature quality checks.
+
+\paragraph{Clinical variables.} For each included patient, we extracted the Disease-Free Survival (DFS) endpoint: the binary event indicator and time to event (in months). In the dataset, the DFS status is coded as 0 = no recurrence (censored) and 1 = recurrence/progression, with the corresponding DFS time recorded from initial treatment to event or last follow-up. These survival data, together with the model’s predicted HN-risk scores for each patient, form the basis of our exploratory survival analysis on the TCGA cohort.

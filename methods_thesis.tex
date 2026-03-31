@@ -1,0 +1,567 @@
+\chapter{Methods}
+\label{ch:methods}
+
+Each patient in our study is associated with one or more whole-slide images (WSIs) and a binary label: high-risk (HN) or low-risk (LN). Figure~\ref{fig:pipeline} illustrates the overall pipeline. For each WSI, we perform a series of preprocessing steps: we tile the image at 20X magnification, apply tissue detection and quality-control filters to discard irrelevant regions, and then convert each retained tile into a feature vector via a pretrained model. 
+These tile embeddings are then aggregated per patient and fed into a multiple-instance learning (MIL) model that produces patient-level outputs. Finally, post-processing steps such as calibration can be applied to the outputs. The entire training and inference workflow is designed to be reproducible and to avoid data leakage, as elaborated below.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{pipeline.png}
+\caption{\textbf{Overview of the proposed patient-level Multi-Instance Learning (MIL) pipeline.} 
+WSIs are tiled, filtered (tissue/quality control), and encoded into tile embeddings ($D=768$), which are then aggregated by a MIL model (CLAM or TransMIL) to predict high-risk (HN) vs. low-risk (LN).}
+\label{fig:pipeline}
+\end{figure}
+
+%... (figure and high-level description) ...
+
+\section{Data Split and Leakage Prevention}
+\label{sec:datasplit}
+A robust evaluation is critical given our limited dataset. We employ a stratified group cross-validation strategy to maximize data use while avoiding overfitting and information leakage. All model development including hyperparameter tuning and calibration is done via cross-validation on the 89-patient development cohort, reserving the 13-patient held-out for final testing.
+
+\paragraph{Patient-wise stratified cross-validation.}
+We use stratified \emph{group} $K$-fold cross validation on the development cohort (with $K=5$ folds) to train and validate our models. “Group” means that patients are treated as groups: all tiles from a given patient are kept in the same fold, never split between training and validation. This ensures that slide-specific patterns (staining, artifacts, etc.) cannot leak from a patient in training to the same patient in validation. Stratification is done on the binary class label, so that each fold has approximately the same HN:LN ratio. We implemented this using \texttt{StratifiedGroupKFold} (from \texttt{sklearn}), with \texttt{shuffle=True} and a fixed \texttt{random\_state} to generate the folds reproducibly.
+
+\paragraph{Repeated runs with different seeds.}
+Due to the small cohort size and the variability in neural network training, we extend our evaluation by repeating cross-validation with different split seeds. In practice, we generate two stratified group 5-fold partitions of the development cohort (split seeds 58 and 1). For each split, we train one model per fold, yielding $2\times 5 = 10$ trained models.
+
+To limit experimental variance and keep the comparison controlled, we fix the network initialization seed to \texttt{init\_seed}=42 for all runs. In other words, while we vary the \emph{data split} (via different \texttt{split\_seed} values), we keep the \emph{random initialization} of the neural network identical across experiments. Concretely, \texttt{split\_seed} determines \emph{which patients} end up in each fold (and therefore which samples the model sees during training versus validation), whereas \texttt{init\_seed} determines the \emph{initial values of the network weights} (and, depending on the implementation, other stochastic components such as data-order shuffling and dropout masks). By holding \texttt{init\_seed} constant, the differences we observe across runs are primarily attributable to the different train/validation partitions, rather than to models starting from different random initial conditions. This makes performance comparisons across folds and split seeds more directly comparable and easier to interpret. Every prediction is tagged with its \{\texttt{split\_seed}, \texttt{init\_seed}, \texttt{fold}\} to allow aggregation across these runs. Reporting performance aggregated across these 10 models provides a more reliable estimate than a single train/val split.
+
+\paragraph{Out-of-fold prediction aggregation.}
+During cross-validation, the primary performance assessment is done on the validation folds. We treat the collection of validation predictions across folds (out-of-fold, OOF) as a cross-validated estimate of performance on the development cohort. Since each patient appears exactly once as a validation sample, these OOF predictions are out-of-sample at the patient level (i.e., no patient is evaluated by a model trained on that patient), which prevents patient-level data leakage.
+
+We use the aggregated OOF predictions to compute overall metrics (ROC AUC, accuracy, etc.) on the 89-patient development cohort and to compare model configurations. When OOF predictions are used for post-hoc steps (e.g., calibration or threshold selection; see Section~\ref{sec:calibration}), we report these as internal, cross-validated estimates; final conclusions are supported by evaluation on independent data whenever available.
+
+\paragraph{Held-out test evaluation.}
+After finalizing the model (or ensemble) via cross-validation, we evaluate it on the held-out inference cohort of 13 patients exactly once. This is effectively a true “test set” scenario. We load the trained model(s) and apply the identical pipeline to the slides of those 13 patients (tiling $\to$ feature extraction $\to$ MIL prediction). Because the held-out labels played no role in training or calibration, this evaluation provides an unbiased measure of generalization. Results on this test set are reported in Chapter~4. We note that if multiple models are used (ensemble), their outputs are averaged at the patient level.
+
+\section{WSI Tiling, Tissue Detection, and Quality Control}
+\label{sec:tiling_detail}
+Whole-slide images (WSIs) are extremely large (often $>100,000\times100,000$ pixels), so processing them as a whole is infeasible. We instead tile each WSI into manageable patches at a fixed physical scale, ensuring consistent resolution across slides. In our pipeline, the tiling parameters are set to match typical high magnification: we choose a target resolution of $\texttt{tile\_mpp} = 0.5$~$\mu$m/pixel (approximately 20$\times$ microscope magnification). Each tile is set to $\texttt{tile\_px} = 512$ pixels on a side at that resolution. Thus, each tile covers a square region of tissue with side length
+\begin{equation}\label{eq:tile_physical_size}
+L = \texttt{tile\_px}\cdot \texttt{tile\_mpp} = 512 \cdot 0.5~\mu\text{m/px} = 256~\mu\text{m}~.
+\end{equation}
+We also set the tile stride equal to the tile size (512 px) to avoid overlap between tiles. Introducing overlap would correspond to using a smaller stride, e.g., $\texttt{stride}=(1-o)\cdot512$ px where $o\in(0,1)$ denotes the overlap fraction (10\% overlap $\Rightarrow$ stride $\approx0.9\cdot512$ px). The potential benefit is increased spatial coverage and reduced boundary effects: structures cut by a tile border are more likely to be fully captured in at least one neighboring tile, which can improve the robustness of tile embeddings and downstream MIL aggregation. However, overlap also introduces substantial redundancy (neighboring tiles become highly correlated) and increases compute and storage requirements. The total number of tiles grows approximately as $\sim 1/(1-o)^2$ (e.g., $o=0.25$ $\Rightarrow$ $\sim1.8\times$ tiles; $o=0.50$ $\Rightarrow$ $\sim4\times$ tiles), which amplifies feature-extraction time, disk usage, and MIL training/inference cost. Moreover, in our weakly supervised MIL setting the discriminative signal is intrinsically sparse: adding many near-duplicate tiles via overlap increases the fraction of redundant (and potentially uninformative) instances, which can introduce additional noise and correlations that may confuse the attention/aggregation mechanism and hinder learning. Since one practical bottleneck in our study was the already large total tile count, we deliberately avoided overlap to keep the pipeline tractable. These choices are aligned with the input requirements of our chosen feature encoder (the CONCH model expects $512\times512$ patches at 20$\times$). For the baseline ViT-S encoder from Lunit, which operates on $224\times224$ patches, we instead extract $224\times224$ patches directly at 20$\times$.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{qc_tiling_example.png}
+\caption{Example output of tissue masking and tiling. Left: original WSI thumbnail at 4.0~$\mu$m/px. Right: tiles retained after Otsu-based tissue masking (green grid) at the same resolution.}
+\label{fig:qc_tiling_example}
+\end{figure}
+
+Algorithm~\ref{alg:tiling} provides pseudocode for the tiling and tissue masking procedure. In short, we first read a downsampled version of the slide (e.g. at 4.0~$\mu$m/px) and apply Otsu’s threshold to obtain a binary mask of tissue vs. background. Then, iterating over a grid of candidate tile coordinates at the full resolution, we compute the tissue fraction of each tile by mapping it onto the mask. Tiles with tissue fraction below a threshold $\tau_{\text{tissue}}$ are skipped. The coordinates of each retained tile (and its tissue fraction) are saved to an index. This indexing step is deterministic and reproducible – given the same image and parameters, it will always produce the same list of tiles – which is important for auditability. In our case, we set $\tau_{\text{tissue}}=0.40$ (40\%), as noted in Chapter~2. No morphological operations (erosion/dilation) were applied to the mask, since we found the raw threshold sufficient (aggressive post-processing risked removing real tissue in slides with faint staining).
+
+
+
+\begin{algorithm}[H]
+\caption{Whole-Slide Tiling and Otsu-Based Tissue Masking}
+\label{alg:tiling}
+\scalebox{0.8}{%
+\begin{minipage}{\linewidth}
+\begin{algorithmic}[1]
+\REQUIRE WSI handle $S$ with level-0 size $(W_0,H_0)$ and pixel sizes $(\mathrm{MPP}_x,\mathrm{MPP}_y)$;
+mask resolution \texttt{mask\_mpp};
+tile size \texttt{tile\_px} at \texttt{tile\_mpp};
+stride \texttt{stride\_px} at \texttt{tile\_mpp};
+tissue threshold $\tau_{\text{tissue}}$.
+\STATE $T \leftarrow \textsc{ReadRect}(S,\;x{=}0,\;y{=}0,\;w{=}W_0,\;h{=}H_0,\;\texttt{resolution}{=}\texttt{mask\_mpp},\;\texttt{units}{=}\texttt{mpp})$ 
+\STATE $M \leftarrow \textsc{OtsuTissueMasker}(T)$ \hfill // boolean mask with $M[i,j]\in\{0,1\}$
+\STATE $(W_m,H_m) \leftarrow \big(\text{width}(M),\text{height}(M)\big)$
+\STATE $s_x \leftarrow \frac{W_m}{W_0},\;\; s_y \leftarrow \frac{H_m}{H_0}$ \hfill // level-0 $\to$ mask scale factors
+
+\STATE $w_0 \leftarrow \mathrm{round}\!\left(\texttt{tile\_px}\cdot\frac{\texttt{tile\_mpp}}{\mathrm{MPP}_x}\right),\;\;
+       h_0 \leftarrow \mathrm{round}\!\left(\texttt{tile\_px}\cdot\frac{\texttt{tile\_mpp}}{\mathrm{MPP}_y}\right)$
+\STATE $d_x \leftarrow \mathrm{round}\!\left(\texttt{stride\_px}\cdot\frac{\texttt{tile\_mpp}}{\mathrm{MPP}_x}\right),\;\;
+       d_y \leftarrow \mathrm{round}\!\left(\texttt{stride\_px}\cdot\frac{\texttt{tile\_mpp}}{\mathrm{MPP}_y}\right)$
+\STATE Initialize list $\mathcal{L} \leftarrow []$
+
+\FOR{$y_0 = 0$ \TO $H_0-h_0$ \textbf{step} $d_y$}
+  \FOR{$x_0 = 0$ \TO $W_0-w_0$ \textbf{step} $d_x$}
+    \STATE $x_m \leftarrow \mathrm{round}(s_x x_0),\;\; y_m \leftarrow \mathrm{round}(s_y y_0)$
+    \STATE $w_m \leftarrow \mathrm{round}(s_x w_0),\;\; h_m \leftarrow \mathrm{round}(s_y h_0)$
+    \STATE $x_1 \leftarrow \max(0,\min(x_m,\;W_m)),\;\; y_1 \leftarrow \max(0,\min(y_m,\;H_m))$
+    \STATE $x_2 \leftarrow \max(0,\min(x_m+w_m,\;W_m)),\;\; y_2 \leftarrow \max(0,\min(y_m+h_m,\;H_m))$
+    \STATE $w_c \leftarrow x_2-x_1,\;\; h_c \leftarrow y_2-y_1$
+    \IF{$w_c=0$ \OR $h_c=0$}
+      \STATE \textbf{continue}
+    \ENDIF
+
+    \STATE $\text{tf} \leftarrow \frac{1}{w_c h_c}\sum_{(i,j)\in [y_1:y_2)\times[x_1:x_2)} M[i,j]$ \hfill // tissue fraction
+    \IF{$\text{tf} \ge \tau_{\text{tissue}}$}
+      \STATE Append $(x_0,y_0,w_0,h_0,\text{tf})$ to $\mathcal{L}$
+    \ENDIF
+  \ENDFOR
+\ENDFOR
+\RETURN $\mathcal{L}$
+\end{algorithmic}
+\end{minipage}}
+\end{algorithm}
+
+
+
+\paragraph{Tile-level Quality Control:} Following the tissue-mask filtering, we perform an additional quality-control (QC) pass on each tile. While the mask removes completely blank areas, some tiles, despite containing tissue, can be unsuitable due to artifacts (out-of-focus regions, pen markings, etc.). We implement a lightweight tile-level QC heuristic based on low-level intensity statistics, similar in spirit to brightness/contrast-based filtering used in digital pathology QC toolkits (e.g., HistoQC) and tile background/whitespace filtering pipelines (e.g., Slideflow) \cite{janowczyk2019histoqc,dolezal2024slideflow}.
+For each tile that passed the tissue mask, we read the tile image at full resolution (0.5~$\mu$m/px) and compute the mean RGB value $\mu_{\text{RGB}}$ and the standard deviation of RGB intensities $\sigma_{\text{RGB}}$. If $\mu_{\text{RGB}}$ is too low (the tile is very dark) or $\sigma_{\text{RGB}}$ is too low (the tile is almost blank or flat-colored), we discard the tile. In practice, we require $\mu_{\text{RGB}} \ge \tau_{\mu}$ and $\sigma_{\text{RGB}} \ge \tau_{\sigma}$. We set $\tau_{\mu}=0.50$ (on a [0,1] scale, assuming 1 = white) and $\tau_{\sigma}=0.08$, based on visual inspection of tiles. These thresholds are intentionally lenient enough to keep lightly stained but valid tissue, yet they catch extreme outliers. Figure~\ref{fig:qc_noisy_tiles} shows examples of tiles removed by this step: the rule eliminates tiles that are essentially all white or all black, or otherwise lack meaningful content. By filtering these out, we avoid feeding the MIL model tiles that could introduce noise or spuriously correlate with the labels (e.g. a mis-scanned blank tile might correlate with a certain batch of slides). After this stage, all remaining tiles are considered valid data for feature extraction. In our dataset, as mentioned, this removed at most a few tiles per slide (often 0). We did not quantify whether the rejection rate differed between HN and LN patients; however, the QC criteria are based on low-level image statistics rather than label information. Therefore, even if the rejection rate were to differ between HN and LN, this QC step is unlikely to introduce systematic bias or class imbalance at the patient level: the filtering is applied at the tile level not by excluding patients, and it primarily removes low-information or corrupted tiles that are likely to act as noise as illustrated in Fig.~\ref{fig:qc_noisy_tiles}. Given that the discriminative signal in WSIs is sparse and each patient contributes a large number of tiles, this QC step is more likely to remove noise than to eliminate meaningful class-specific evidence.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.8\textwidth]{noisy_tiles.png}
+\caption{Examples of representative patches excluded due to low-information or corrupted appearance (e.g., extreme darkness/brightness, low contrast, blur/out-of-focus, or scanning artifacts). Although they may fall within the tissue mask, these tiles are removed to reduce noise and prevent spurious signals during MIL training.}
+\label{fig:qc_noisy_tiles}
+\end{figure}
+
+
+\paragraph{Feature extraction and embedding consistency.}
+Once we have a clean set of image tiles for each slide, the next step is to convert each tile into a numerical feature vector using a pretrained model. Prior work has shown that self-supervised learning (SSL) can produce feature extractors that transfer well to downstream tasks in pathology \cite{ciga2022ssl}. We adopt an offline feature extraction approach: all tiles are processed by the pretrained model \emph{before} MIL training, and the resulting embeddings are cached to disk. This has two advantages: (i) it amortizes the expensive computation of running a Transformer on millions of tiles : we do it once, then reuse features for any MIL model, and (ii) it improves reproducibility, since every experiment uses the exact same frozen tile features allowing fair comparisons and easy debugging. By freezing the feature extractor, we reduce the MIL training problem to learning only the aggregation head, which is much more lightweight.
+
+More broadly, there are multiple strategies to leverage a pretrained tile encoder: (i) use it as a \emph{frozen} feature extractor with offline extraction (as above), (ii) \emph{fine-tune} the encoder end-to-end (fully or partially, e.g., unfreezing only the last blocks or using parameter-efficient adapters such as LoRA), or (iii) train a lightweight linear/probing head on top of frozen embeddings. In this work, we adopt option (i): we keep the pretrained Vision Transformer encoder fixed and extract one embedding per tile (as returned by the released checkpoint), which is then used as input to the downstream MIL aggregation model.
+
+More broadly, there are multiple strategies to leverage a pretrained tile encoder: (i) use it as a \emph{frozen} feature extractor with offline extraction, (ii) \emph{fine-tune} the encoder end-to-end fully or partially, e.g., unfreezing only the last blocks or using parameter-efficient adapters such as Low-Rank Adaptation (LoRA), or (iii) train a lightweight linear head on top of frozen embeddings. In this work, we adopt option (i): we keep the pretrained Vision Transformer encoder fixed and extract one embedding per tile, which is then used as input to the downstream MIL aggregation model.
+
+\paragraph{Backbone Models and Tile Geometry.} We evaluated two backbone models for feature extraction, corresponding to the baseline and final pipelines:
+\begin{itemize}
+    \item \textbf{Lunit DINO ViT-S/8}: a Vision Transformer \textit{Small} model (ViT-S) with 8-pixel patches and a $224\times224$ input window, trained using DINO self-distillation (self-supervised) on a large collection of histology images. We use the implementation from the \texttt{timm} library (`vit\_small\_patch8\_224`) initialized with pretrained weights released by \emph{Lunit}, a South Korea--headquartered medical AI company developing AI tools for cancer imaging diagnostics and digital pathology/biomarker analysis. For this model, tiles are read at 0.5~$\mu$m/px and then resized to $224\times224$ pixels (since the model expects 224-pixel inputs). The embedding dimensionality is $D=384$ for ViT-S. We apply the normalization (per-channel mean and std) specified by Lunit for H\&E images before feeding tiles into the network.
+    \item \textbf{CONCH ViT (via TITAN release; Mahmood Lab)}: a transformer-based pathology \textit{foundation} image encoder released by the \emph{Mahmood Lab} (Faisal Mahmood, Brigham and Women's Hospital/Harvard-affiliated computational pathology group) alongside TITAN \cite{mahmood2024titan}. Here, \emph{TITAN} refers to the overall framework/release, while \emph{CONCH} is the specific pretrained Vision Transformer encoder we actually run as a frozen \textbf{feature extractor} (accessed via the authors' Hugging Face model release, e.g., \texttt{MahmoodLab/TITAN}). This encoder expects larger inputs: we feed tiles at 0.5~$\mu$m/px with size $512\times512$ (no resizing---direct high-res patches). It outputs a $D=768$ dimensional embedding per tile. We use the encoder's provided preprocessing transforms to maintain consistency with its training distribution (including color normalization). Notably, this encoder is substantially larger and more expressive than the ViT-S; we hypothesized (and later confirmed) that its features would be more discriminative for our task.
+\end{itemize}
+
+
+In our experiments, the CONCH features consistently outperformed the Lunit features in cross-validation. In particular, compared to the CLAM+Lunit baseline, TransMIL+CONCH improved discrimination (ROC AUC and PR-AUC) and overall Accuracy and F1 in both raw and rescaled out-of-fold evaluation (Tables~\ref{tab:oof_raw_diag} and~\ref{tab:oof_rescaled_main}). On the held-out set, the final TransMIL+CONCH configuration also achieved higher ROC AUC and PR-AUC and better Accuracy and F1 than the CLAM baseline, with the clearest gains in sensitivity while maintaining high specificity (Tables~\ref{tab:heldout_raw} and~\ref{tab:heldout_rescaled}). Therefore, all final results use the 768-D CONCH embeddings, while the smaller ViT-S (384-D) and Lunit features are used only for initial baseline experiments.
+
+\paragraph{High-throughput Extraction Implementation:} Extracting features from tens of thousands of tiles per slide requires optimized code. We implement a batched inference pipeline in PyTorch, utilizing the GPU for model computation and CPU workers for data loading. We load tile images using a \texttt{DataLoader} with multiple worker processes, and enable automatic mixed precision (AMP; \texttt{torch.autocast}) to reduce GPU memory usage. Intuitively, AMP uses two numerical formats: it performs many computations in 16-bit floating point (FP16), which is faster and uses less memory, but keeps a small set of numerically sensitive steps in 32-bit floating point (FP32) to preserve stability and accuracy. In our pipeline, AMP is used only during inference for feature extraction (no gradient computation), i.e., as a performance/memory optimization rather than a training trick.
+
+Feature extraction was executed on HPC infrastructure via SLURM array jobs, with one NVIDIA H200 GPU requested per slide-level job. Batch sizes were provided as fixed configuration values in the submission scripts (\texttt{--batch\_size 6144} for Lunit ViT-S and \texttt{--batch\_size 2048} for CONCH). These values reflect the settings used in our runs rather than an exhaustive sweep for the maximum feasible batch size. Jobs were parallelized across slides via the array scheduler (with a capped number of concurrent tasks). By caching the resulting embeddings to disk, subsequent MIL training experiments can proceed substantially faster, since they only load and manipulate precomputed features.
+
+\paragraph{Storage and Reproducibility:} For each slide, the extracted embeddings are saved to a PyTorch tensor file (`.pt`) along with metadata. The tensor file contains a dictionary with two primary keys: \texttt{feats} – a $(N_{\text{tiles}}, D)$ matrix of feature vectors (we use FP16 to reduce storage by half), and \texttt{row\_idx} – the corresponding indices of those tiles in the original tile index (linking each feature vector back to a specific location in the WSI). We also store \texttt{slide\_id} and references to the exact tiling parameters and model used (via a hash of parameters and a model version ID). Additionally, a JSON metadata file records human-readable details (e.g., slide identifier, total number of tiles vs kept after QC, runtime, and hashes of relevant inputs). Our extraction script checks for an existing feature file and will skip re-extraction if the parameters hash matches, making the process idempotent and robust.
+
+This separation of feature extraction from MIL model training enables fair comparisons between MIL methods on a fixed set of embeddings. We note that, because extraction uses GPU inference with mixed precision, we do not claim bitwise-identical feature tensors across reruns unless explicit deterministic settings and output hashing are enforced.
+
+\section{MIL Formulation}
+\label{sec:mil-heads}
+After feature extraction, each patient $p$ is represented by a bag of feature vectors $X_p = \{\mathbf{z}_{p,k}\}_{k=1}^{N_p}$, where $N_p$ is the number of tiles for patient $p$ (potentially tens of thousands). The MIL model $f_\theta$ must aggregate these into a single output for the patient. We explore two families of MIL architectures: (1) an attention-based pooling model, and (2) a transformer-based model. In both cases, our implementations include an auxiliary regression head for the continuous label (\%CD15 in CD66\textsuperscript{+}CD10\textsuperscript{+}). This head is used \emph{only during training} to define a multitask objective : a weighted combination of binary cross-entropy for HN/LN classification and a Huber loss for the continuous target. At inference time we report only the classification probability, but the auxiliary regression loss encourages the learned patient-level representation, and hence the probability score, to vary consistently with the underlying continuous label (e.g., distinguishing HN patients with 55\% vs.\ 90\%).
+
+\paragraph{CLAM – attention-based MIL (baseline).} Clustering-constrained Attention MIL (CLAM) \cite{Lu} is an extension of the classic attention-based MIL pooling by Ilse et al. \cite{ilse2018}. In standard attention MIL, each instance $k$ in the bag is given a weight $a_k = \text{Attention}(\mathbf{z}_k)$, where the attention mechanism is a small neural network that scores each embedding. The bag representation is then $\mathbf{h} = \sum_k a_k\,\mathbf{z}_k$ (or sometimes a non-linear transform $\phi(\mathbf{z}_k)$ in place of $\mathbf{z}_k$). This $\mathbf{h}$ is fed to a classifier to predict the bag label. CLAM enhances this in two ways: First, it uses a \emph{gated attention} mechanism (the ``gated attention'' variant introduced by Ilse et al.~\cite{ilse2018} and adopted in CLAM~\cite{Lu}). Instead of scoring each tile embedding with a single MLP, the attention scorer computes two parallel streams from the same embedding $\mathbf{z}_k$: a \emph{content} stream passed through $\tanh(\cdot)$ and a \emph{gate} stream passed through a sigmoid $\sigma(\cdot)$. Concretely,
+\begin{equation}
+\mathbf{u}_k=\tanh(\mathbf{V}\mathbf{z}_k),\qquad
+\mathbf{v}_k=\sigma(\mathbf{U}\mathbf{z}_k),
+\end{equation}
+and the resulting vectors are combined by an elementwise (Hadamard) product before being projected to a scalar attention logit and normalized across tiles:
+\begin{equation}
+s_k=\mathbf{w}^\top(\mathbf{u}_k\odot\mathbf{v}_k),\qquad
+a_k=\frac{\exp(s_k)}{\sum_j \exp(s_j)}.
+\end{equation}
+Intuitively, the $\tanh$ branch produces a signed, saturating ``evidence'' (content) vector, while the sigmoid branch produces a soft gate in $[0,1]$ that can suppress or pass through individual feature dimensions. Their product $\mathbf{u}_k\odot\mathbf{v}_k$ therefore implements a content--gating interaction (``use this evidence only when the gate is open''), yielding a more expressive attention scoring function than a single-stream attention network. Second, CLAM introduces a novel instance-level loss: in each forward pass, it identifies a small subset of tiles with highest attention and lowest attention,\ the top-$B$ and bottom-$B$ tiles (i.e.\ the $B$ tiles with the largest and smallest attention weights, respectively) where $B$ is a user-defined integer hyperparameter controlling how many tiles per extreme are selected. It then assumes the top tiles are more likely to be from the positive class and bottom tiles from the negative class, and uses these as pseudo-labels to train an auxiliary classifier. Essentially, it clusters embeddings into “positive evidence” vs “negative evidence” groups and encourages the model to separate those. This clustering-constrained loss acts as a regularizer, pushing the model to not only output the correct bag label but also internally distinguish informative tiles from non-informative ones. In summary, CLAM provides: (a) an attention weight $a_k$ for each tile (which we will later use for interpretability), (b) a bag-level prediction $\ell_p$, and (c) an optional instance-level loss term (used in training only).
+
+We implemented CLAM following \cite{Lu} for the attention head and instance loss. In our code, this corresponds to a `CLAMHead` module that contains a gated attention laye, two fully-connected layers producing the $\tanh$ and $\sigma$ streams and an instance classifier head. % --- CLAM instance-level supervision (optional) ---
+During training, when CLAM instance supervision is enabled, we compute an instance-level logit for each tile embedding $h_{p,i}$ through the instance head:
+\begin{equation}
+s_{p,i} \;=\; f_{\text{inst}}(h_{p,i}) \in \mathbb{R}, \qquad i=1,\dots,N_p,
+\end{equation}
+where $f_{\text{inst}}$ is a linear classifier.
+Let $a_{p,i}$ denote the attention weight assigned to tile $i$ by the gated attention module (softmax-normalized over the bag). We select the indices of the $k$ most-attended tiles:
+\begin{equation}
+\mathcal{I}_k(p) \;=\; \operatorname{TopK}\!\left(\{a_{p,i}\}_{i=1}^{N_p}\right),
+\end{equation}
+and apply a binary cross-entropy loss between their logits and the bag label $y_p \in \{0,1\}$:
+\begin{equation}\label{eq:inst_loss}
+\mathcal{L}_{\text{inst}}^{\text{raw}}
+\;=\;
+\frac{1}{k}\sum_{i \in \mathcal{I}_k(p)}
+\left[
+-\, y_p \log \sigma(s_{p,i})
+- (1-y_p)\log\!\left(1-\sigma(s_{p,i})\right)
+\right].
+\end{equation}
+This is equivalently implemented as \texttt{BCEWithLogits} on the selected logits (mean-reduced across the $k$ instances). The instance term contributes to the overall objective through a small weight $\lambda_{\text{inst}}$. In particular, we define the weighted instance term as
+\begin{equation}\label{eq:inst_weighted}
+\mathcal{L}_{\text{inst}} \;=\; \lambda_{\text{inst}}\,\mathcal{L}_{\text{inst}}^{\text{raw}},
+\end{equation}
+so that Eq.~\ref{eq:loss_total} includes $\mathcal{L}_{\text{inst}}$ as the (already weighted) contribution. In our experiments, this weight had to be set extremely low (on the order of $10^{-5}$) to avoid overpowering the main bag-level loss, and in several runs we disabled instance supervision entirely. Notably, our final TransMIL-based model does not use any instance-level loss.
+
+
+
+\paragraph{TransMIL – transformer-based MIL (final).}
+Transformer-based MIL was proposed by Shao et al.~\cite{shao2021} to model interactions between instances in a bag via self-attention. In our TransMIL head, the $N_p$ tile embeddings of a patient are treated as a sequence of tokens. A learnable classification token [CLS] is prepended, and the resulting sequence is processed by a Transformer encoder; the bag logit $\ell_p$ is predicted from the final [CLS] embedding via a linear layer (and, when enabled, an additional regression output is likewise predicted from [CLS]). We do not use the original TransMIL PPEG positional encoding, and we do not implement the Nyström attention approximation. Instead, we keep standard self-attention and bound the quadratic cost by limiting the number of tokens per forward pass through diversity-aware bag sampling: we cap the maximum bag size to $M=1024$ tiles in both training and validation and use a rotating sampling strategy across epochs to improve coverage of each patient’s full tile set. In this patient-bag setup we do not inject explicit spatial coordinates (tile $(x,y)$ positions on the WSI grid) into the Transformer. In general, such coordinates can be used to derive absolute or relative positional encodings (a common mechanism in Transformers) so that self-attention can take into account spatial proximity and tissue architecture rather than treating the bag as an unordered set or a 1D sequence~\cite{shao2021}. Although our codebase contains an optional 2D relative position-bias module, it is disabled here because our patient-level bags do not retain consistent per-tile coordinate metadata. Concretely, our TransMIL head uses 2 Transformer layers with hidden dimension 768, 4 attention heads, feed-forward dimension 3072, and dropout 0.2. For interpretability, we exploit the self-attention maps produced by the Transformer and use the [CLS]$\rightarrow$token attention weights from the final layer (averaged across heads) as tile importances. Compared to attention-pooling heads such as CLAM, this TransMIL head has more parameters due to the Transformer layers, but it remains lightweight relative to the frozen feature extractor.
+
+\paragraph{Bag construction and sampling strategy.}
+Training an MIL model on whole slides requires careful sampling of tiles from each bag, especially when a patient bag can contain up to 8-12k tiles. It is infeasible and unnecessary to use all tiles from a patient in every training epoch (this would be computationally heavy and could over-emphasize redundant regions). We propose a balanced sampling per bag each epoch that ensures both diverse coverage and focus on potentially informative tiles. The approach is given in Algorithm~\ref{alg:sampling_final}. In each epoch, for each patient $p$, we aim to select $M$ tiles out of $N_p$ (we set $M=1000$ for TransMIL due to the quadratic $\mathcal{O}(M^2)$ scaling of self-attention). We first define a candidate pool $\mathcal{P}$ of tiles by taking the next $B$ indices from a fixed random permutation of the tile indices (this permutation is different for each patient and is generated once, ensuring every tile will eventually appear). We choose $B = 1.5\times M$ to deliberately oversample the candidate pool, so that the final bag can be assembled with more diversity than a direct $M$-subset would allow. From this pool $\mathcal{P}$, we then select tiles in two ways: (a) \textbf{centroid sampling:} we run $K$-means on the feature vectors of $\mathcal{P}$ (with $K$ set to $\lfloor \sqrt{|\mathcal{P}|}\rfloor$, capped between 16 and 96) and take the tile closest to each cluster centroid; this selects a diverse set $\mathcal{C}$ of tiles covering different feature-space clusters. (b) \textbf{random sampling:} after centroid selection, we fill the rest of the bag with a random sample $\mathcal{R}$ from the remaining tiles in $\mathcal{P} \setminus \mathcal{C}$. The fraction $c$ (we used $c=0.85$) controls the \emph{composition} of the final bag: approximately $c\times M$ tiles are drawn from the centroid-based set (prioritizing diversity across clusters), while the remaining $(1-c)\times M$ tiles are drawn from $\mathcal{P}\setminus\mathcal{C}$ uniformly at random. Concretely, $c$ sets how many “structured” selections (cluster representatives) make it into the bag versus how many positions are reserved for exploration; the union $\mathcal{C}\cup\mathcal{R}$ forms the final $M$-tile bag used as input to the MIL model for that epoch. This strategy ensures we pick a variety of tiles (via clustering) while still allowing some random exploration of the feature space. It is a form of hard negative mining that prevents the model from never seeing certain tiles. In our experiments, we found that this “diversity-aware” sampling stabilized training and helped the model not miss small or rare patterns. (We also include a gating on extremely blood-heavy tiles as discussed in Chapter~2 to avoid oversampling those.) During validation and inference, we use deterministic bags (fixed seed) so that evaluation is repeatable and comparable across checkpoints (see Section~\ref{sec:training}).
+
+\begin{algorithm}[H]
+\caption{\textsc{SelectWithKMeansAndRandom} (helper)}
+\label{alg:sampling_helper}
+\begin{algorithmic}[1]
+\REQUIRE Pool embeddings $\{\mathbf{z}_i\}_{i\in\mathcal{P}}$; target size $M_p$; centroid fraction $c$; RNG seed \texttt{seed}.
+\ENSURE A set of (unique) tile indices $\mathcal{B}\subseteq\mathcal{P}$ with $|\mathcal{B}|=M_p$.
+\STATE $n_{\text{cent}} \leftarrow \mathrm{round}(c\,M_p)$; \;\; $n_{\text{rand}} \leftarrow M_p-n_{\text{cent}}$
+\STATE $N \leftarrow |\mathcal{P}|$
+\STATE $K \leftarrow \mathrm{clip}\!\left(\mathrm{round}(\sqrt{N}),\; \min(16,N),\; \min(96,N)\right)$
+\STATE Run K-means on $\{\mathbf{z}_i\}_{i\in\mathcal{P}}$ with $K$ clusters (RNG seeded by \texttt{seed})
+\STATE For each non-empty cluster $k$, find the representative index $r_k\in\mathcal{P}$ nearest to centroid $k$
+\STATE Let $\mathcal{R} \leftarrow \{r_k\}$ be the set of representative indices
+\STATE Sample without replacement $\mathcal{C} \subseteq \mathcal{R}$ with $|\mathcal{C}|=\min(n_{\text{cent}},|\mathcal{R}|)$
+\STATE Sample without replacement $\mathcal{U} \subseteq \mathcal{P}\setminus \mathcal{C}$ with $|\mathcal{U}|=\min(n_{\text{rand}},|\mathcal{P}\setminus \mathcal{C}|)$
+\STATE $\mathcal{B} \leftarrow \mathcal{C}\cup \mathcal{U}$
+\STATE \textbf{if} $|\mathcal{B}| < M_p$: sample extra indices (without replacement) from $\mathcal{P}\setminus \mathcal{B}$ to fill up to $M_p$
+\RETURN $\mathcal{B}$
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[H]
+\caption{Patient Bag Sampling (KMeans + Random Fill)}
+\label{alg:sampling_final}
+\scalebox{0.85}{%
+\begin{minipage}{\linewidth}
+\begin{algorithmic}[1]
+\REQUIRE Patient $p$ with tile embeddings $\{\mathbf{z}_i\}_{i=1}^{N_p}$; max bag size $M$; centroid fraction $c$ (e.g., $0.85$);
+split flag \texttt{train}/\texttt{val}; fold id $f$; base seed $s_0$; epoch $e$ (train only).
+\ENSURE A bag $\mathcal{B}_p$ of tile \emph{indices} with $|\mathcal{B}_p|=M_p$ (unless $M_p=0$).
+\STATE $M_p \leftarrow \min(M, N_p)$ \hfill // target bag size
+\IF{$M_p = 0$}
+  \RETURN $\emptyset$
+\ENDIF
+
+\IF{\texttt{split}=\texttt{val}}
+  \STATE \textit{// validation: deterministic bag, cached per patient}
+  \STATE $\texttt{seed} \leftarrow \textsc{StableSeed}(p,f,s_0)$ \hfill // deterministic hash of $(p,f,s_0)$
+  \STATE $\mathcal{P} \leftarrow \{1,\dots,N_p\}$ \hfill // full pool for validation
+  \STATE $\mathcal{B}_p \leftarrow \textsc{SelectWithKMeansAndRandom}(\{\mathbf{z}_i\}_{i\in\mathcal{P}}, M_p, c, \texttt{seed})$
+  \STATE Cache $\mathcal{B}_p$ for patient $p$ (reuse on future calls)
+  \RETURN $\mathcal{B}_p$
+\ELSE
+  \STATE \textit{// training: rotating candidate pool + (kmeans representatives + random fill)}
+  \STATE $B \leftarrow \lceil 1.5\, M_p\rceil$ \hfill // pool size (oversample to encourage diversity)
+  \STATE Initialize (once) a per-patient permutation $\pi_p$ of $\{1,\dots,N_p\}$ with seed $\textsc{Hash}(p,f,s_0)$
+  \STATE Maintain a per-patient pointer $ptr_p$ (initialized to $0$)
+  \STATE $\mathcal{P} \leftarrow$ next $B$ indices from $\pi_p$ starting at $ptr_p$ (wrap around if needed)
+  \STATE $ptr_p \leftarrow (ptr_p + \lfloor B/2\rfloor)\bmod N_p$ \hfill // advance by half-pool (controlled overlap)
+  \STATE $\texttt{seed} \leftarrow \textsc{Hash}(p,e,s_0)$ \hfill // epoch-dependent RNG seed
+  \STATE $\mathcal{B}_p^{(e)} \leftarrow \textsc{SelectWithKMeansAndRandom}(\{\mathbf{z}_i\}_{i\in\mathcal{P}}, M_p, c, \texttt{seed})$
+  \RETURN $\mathcal{B}_p^{(e)}$
+\ENDIF
+\end{algorithmic}
+\end{minipage}}
+\end{algorithm}
+
+
+% \section{Training Objective and Optimization}
+% \label{sec:training}
+% We train our MIL models to classify HN vs LN, while also utilizing the available continuous neutrophil data to enrich learning. The primary loss is the binary cross-entropy loss with logits (BCEWithLogits in PyTorch). Given a patient label $y\in\{0,1\}$ (0 = LN, 1 = HN) and the model’s output logit $\ell$ for that patient, we compute $p=\sigma(\ell)$ and then:
+% \begin{equation}\label{eq:BCE}
+% \mathcal{L}_{\text{BCE}}(p,y) = -\;\Big[\tilde{y}\,\log p \;+\; (1-\tilde{y})\,\log(1-p)\Big]~, 
+% \end{equation}
+% where $\tilde{y}$ is a smoothed label: $\tilde{y} = (1-\epsilon)y + \epsilon(1-y)$. We use a small smoothing factor $\epsilon=0.05$ (5\% smoothing), which means an HN label is treated as 0.95 and LN as 0.05 in the loss. Label smoothing acts as a regularizer to prevent the model from becoming over-confident in its predictions \cite{szegedy2016rethinking}.
+
+% In addition, if the continuous target $r_i$ (\%CD15 in CD66\textsuperscript{+}CD10\textsuperscript{+}) is available for a training sample, we add an auxiliary regression loss. We denote the true continuous value (range 0–100\%) as $y^{\text{cont}}$ and normalize it to $y' = y^{\text{cont}}/100 \in [0,1]$. The model produces a prediction $\hat{y}_p^{\text{cont}}$ via a regression head attached to the bag representation (for CLAM) or the [CLS] token (for TransMIL). We use the Smooth L1 loss (Huber loss) between $\hat{y}_p^{\text{cont}}$ and $y'$. We define the auxiliary regression loss as
+% \begin{equation}\label{eq:reg_huber}
+% \mathcal{L}_{\text{reg}} = \mathrm{Huber}\!\big(\hat{y}_p^{\text{cont}},\, y'\big)~.
+% \end{equation} Our total loss is:
+% \begin{equation}\label{eq:loss_total}
+% \mathcal{L} = \mathcal{L}_{\text{BCE}} \;+\; \alpha_{\text{reg}}\,\mathbb{I}\{y^{\text{cont}}\ \text{is available}\}\,\mathcal{L}_{\text{reg}}~, 
+% \end{equation}
+% with $\alpha_{\text{reg}}$ controlling the weight of the regression task. We set $\alpha_{\text{reg}} = 3.0$ in our final runs, meaning the regression loss is scaled to have a relatively strong influence (since it is on a 0–1 scale similar to the classification loss values). This multitask training implicitly guides the model: for example, two HN patients with different neutrophil percentages should not be mapped to identical representations, as the model is pressured to reflect the continuous difference too. We found this improved the model’s calibration and sometimes its ranking of samples.
+
+% Beyond the primary losses, we incorporate the regularization techniques discussed earlier (instance dropout, feature jitter, attention entropy). These do not add explicit terms to $\mathcal{L}$ (except the tiny entropy term when enabled); instead, they affect the training dynamics stochastically. Instance dropout (10\% drop probability) and feature jitter (Gaussian noise $\sigma=0.05$) are applied during every training batch. The attention entropy penalty, when used, is added to $\mathcal{L}$ with weight $10^{-4}$, but we typically set that weight $\to 0$ for TransMIL as noted (the multi-head attention already provides some regularization by distributing focus).
+
+% We optimize the model using the AdamW optimizer (Adam with decoupled weight decay \cite{loshchilov2019adamw}). The initial learning rate is $3\times10^{-4}$ and weight decay $1\times10^{-4}$, chosen based on a small grid search on the baseline model. We use relatively small batches (each “batch” is one patient bag, effectively) and thus no large-batch training tricks are needed. We do, however, use gradient clipping: we cap the global $\ell_2$ norm of the gradient to 2.0 for stability, which prevented occasional exploding gradients in early epochs. We also utilize a learning rate scheduler that monitors validation performance (specifically the validation loss or AUC) and reduces the LR by a factor (e.g. 0.5) if performance hasn’t improved for a set number of epochs (we use patience 5). This typically helps the training converge to a better minimum. We allow training to run for up to $E_{\max}=100$ epochs, but we employ early stopping: if the validation score doesn’t improve for e.g. 10 consecutive epochs, or if we detect the model starting to overfit (training loss decreasing while validation loss increases), we stop early to avoid over-training. In practice, most models converged well before 100 epochs.
+
+% During training, we also take advantage of our deterministic multi-bag validation (Section~\ref{sec:datasplit}) to get a stable validation metric for model selection. Rather than using the raw validation accuracy or AUC at each epoch (which could fluctuate), we compute our custom AP-lift with penalties metric as described in Section~\ref{sec:calibration} (and Appendix~A). This combined metric (higher is better) directly reflects our priorities: high precision-recall performance, well-calibrated probability distribution (no saturation or flatness), and low bag-sampling instability. By selecting the checkpoint that maximizes this metric on the validation folds, we effectively choose a model that is both accurate and not overfit/unstable.
+
+% \begin{algorithm}[H]
+% \caption{Cross-validation training and checkpoint selection (overview)}
+% \label{alg:training}
+% \begin{algorithmic}[1]
+% \REQUIRE Labels $y\in\{0,1\}^N$, patient groups $g$; number of folds $K$; split seeds $\mathcal{S}_{\text{split}}$; init seeds $\mathcal{S}_{\text{init}}$;
+% max epochs $E$; training bag size $M$; validation bag-folds $\mathcal{B}$.
+% \STATE $\mathcal{E}\leftarrow \emptyset$ \hfill // saved checkpoints (ensemble)
+% \STATE $\mathcal{O}\leftarrow \emptyset$ \hfill // out-of-fold (OOF) predictions
+% \FOR{\textbf{each} $s\in\mathcal{S}_{\text{split}}$}
+%   \STATE Build stratified group $K$-fold splits with seed $s$
+%   \FOR{\textbf{each} $t\in\mathcal{S}_{\text{init}}$}
+%     \FOR{\textbf{each} fold $f\in\{0,\dots,K{-}1\}$}
+%       \STATE Initialize model $\theta_{f,s,t}$ and optimizer (seed $t$)
+%       \STATE $best\_score\leftarrow -\infty$; $\theta^*\leftarrow \emptyset$
+%       \FOR{epoch $e=1$ to $E$}
+%         \STATE Train $\theta_{f,s,t}$ for one epoch using stochastic bag sampling (bag size $M$)
+%         \STATE Compute validation predictions on fold $f$ using $|\mathcal{B}|$ deterministic validation bags per patient
+%         \STATE Compute selection score on validation (AP-lift with stability/degeneracy penalties)
+%         \IF{$score > best\_score$}
+%           \STATE $best\_score\leftarrow score$; $\theta^*\leftarrow \theta_{f,s,t}$
+%         \ENDIF
+%         \IF{early stopping criterion met}
+%           \STATE \textbf{break}
+%         \ENDIF
+%       \ENDFOR
+%       \STATE Save checkpoint $\theta^*$ into $\mathcal{E}$
+%       \STATE Store OOF predictions of $\theta^*$ for validation patients into $\mathcal{O}$
+%     \ENDFOR
+%   \ENDFOR
+% \ENDFOR
+% \RETURN $\mathcal{E}$ and $\mathcal{O}$
+% \end{algorithmic}
+% \end{algorithm}
+\section{Training Objective and Optimization}
+\label{sec:training}
+
+We train our MIL models to classify HN vs LN, and we optionally exploit the available continuous neutrophil signal as an auxiliary task. Each training step processes one patient bag (batch size $=1$) composed of $M$ tile embeddings (in our final runs, $M=1024$).
+
+\paragraph{Binary classification loss.}
+Let $y\in\{0,1\}$ be the patient label (0 = LN, 1 = HN) and let $\ell\in\mathbb{R}$ be the predicted logit. We define $p=\sigma(\ell)$. Our primary loss is the weighted binary cross-entropy with logits (PyTorch \texttt{binary\_cross\_entropy\_with\_logits}), with optional label smoothing and a positive-class weight to mitigate class imbalance. Label smoothing is implemented as
+\begin{equation}\label{eq:label_smooth}
+\tilde{y} \;=\; (1-\epsilon)\,y \;+\; \frac{\epsilon}{2}\,,
+\end{equation}
+so that $\epsilon=0.05$ maps $y=1 \mapsto 0.975$ and $y=0 \mapsto 0.025$. so that $\epsilon=0.05$ maps $y=1 \mapsto 0.975$ and $y=0 \mapsto 0.025$. We apply label smoothing to reduce over-confident training targets and improve probability calibration. With $\epsilon=0$, minimizing cross-entropy can strongly incentivize large logit magnitudes, pushing sigmoid outputs toward saturation ($p\approx 0$ or $p\approx 1$). In small datasets and/or in the presence of class imbalance or occasional label noise, this saturation can make optimization less stable and predictions less well-calibrated. By keeping targets strictly inside $(0,1)$, label smoothing acts as a mild regularizer that typically mitigates extreme confidence and yields better-calibrated probabilities.
+The weighted BCE can be written (in probability form) as
+\begin{equation}\label{eq:BCE}
+\mathcal{L}_{\text{BCE}}(p,\tilde{y}) \;=\;
+-\Big[w_{+}\,\tilde{y}\,\log p \;+\; (1-\tilde{y})\,\log(1-p)\Big]\,,
+\end{equation}
+where $w_{+}$ is the per-fold positive-class weight computed on the training split as $w_{+}=N_{\text{neg}}/N_{\text{pos}}$ and applied through the \texttt{pos\_weight} argument. In practice, we optimize the numerically stable logit-based implementation.
+
+\paragraph{Auxiliary regression loss.}
+When a continuous target is available, we use it as an auxiliary regression objective. Let $y^{\text{cont}}\in[0,100]$ be the measured neutrophil-related value (\%CD15 in CD66\textsuperscript{+}CD10\textsuperscript{+}) and let $y' = y^{\text{cont}}/100 \in [0,1]$. The model outputs a scalar prediction $\hat{y}^{\text{cont}}$ from a regression head attached to the bag representation (CLAM) or to the Transformer [CLS] embedding (TransMIL). We use Smooth L1 (Huber) loss:
+\begin{equation}\label{eq:reg_huber}
+\mathcal{L}_{\text{reg}} \;=\; \mathrm{SmoothL1}\!\left(\hat{y}^{\text{cont}},\, y'\right)\,.
+\end{equation}
+If the continuous label is missing, the regression term is set to zero. We weight the regression loss with $\alpha_t$, using a short warm-up over the first epochs:
+\begin{equation}\label{eq:alpha_warmup}
+\alpha_t \;=\; \alpha_{\text{reg}} \cdot \min\!\left(1,\frac{t}{5}\right)\,,
+\qquad \alpha_{\text{reg}} = 3.0\,.
+\end{equation}
+
+\paragraph{Regularization and data perturbations.}
+We apply two stochastic perturbations directly to the instance embeddings during training: (i) instance dropout (drop probability $p=0.1$ while keeping at least 512 instances per bag) and (ii) feature jitter by adding Gaussian noise with $\sigma=0.05$. In addition, we include a small attention-entropy regularizer with weight $\lambda_{\text{attn}}=10^{-4}$:
+\begin{equation}\label{eq:attn_entropy}
+\mathcal{L}_{\text{attn}} \;=\; -\lambda_{\text{attn}}\, H(\mathbf{a})\,,
+\end{equation}
+where $\mathbf{a}$ denotes the attention weights returned by the MIL head and $H(\cdot)$ is a normalized entropy. The negative sign encourages higher-entropy (less peaky) attention distributions. For CLAM, an optional instance-level auxiliary term can be enabled; in TransMIL runs this term is not used.
+
+\paragraph{Total objective.}
+Putting everything together, the per-patient training loss is
+\begin{equation}\label{eq:loss_total}
+\mathcal{L} \;=\; \mathcal{L}_{\text{BCE}} \;+\; \alpha_t\,\mathcal{L}_{\text{reg}} \;+\; \mathcal{L}_{\text{attn}} \;+\; \mathcal{L}_{\text{inst}}\,,
+\end{equation}
+where $\mathcal{L}_{\text{BCE}}$ is the primary classification loss (Eq.~\ref{eq:BCE}); $\mathcal{L}_{\text{reg}}$ is an auxiliary regression term on the continuous marker (Eq.~\ref{eq:reg_huber}), weighted by the warm-up schedule $\alpha_t$ (Eq.~\ref{eq:alpha_warmup}); $\mathcal{L}_{\text{attn}}$ is an attention-entropy regularizer (Eq.~\ref{eq:attn_entropy}); and $\mathcal{L}_{\text{inst}}$ is the optional instance-level supervision used only when CLAM supervision is enabled (Eq.~\ref{eq:inst_weighted}).
+ We set $\mathcal{L}_{\text{reg}}=0$ when $y^{\text{cont}}$ is unavailable.
+
+\paragraph{Optimization.}
+We optimize with AdamW using learning rate $3\times 10^{-4}$ and weight decay $10^{-4}$. We clip the global $\ell_2$ norm of gradients to 2.0 for stability. Training runs for up to $E_{\max}=80$ epochs. We use a \texttt{ReduceLROnPlateau} scheduler in \emph{max} mode on the validation selection score (defined below), with factor 0.5 and patience 3. In addition, we implement a rollback-on-plateau mechanism: if the selection score does not improve for 5 consecutive epochs, we restore the best checkpoint for that fold and reduce the learning rate by a factor 0.5 (up to a fixed maximum number of restarts). We also apply a guard-rail against persistent overfitting: if the training AUC exceeds the validation AUC by more than 0.25 for 10 consecutive epochs, training is stopped early.
+
+\paragraph{Deterministic multi-bag validation and checkpoint selection.}
+For model selection, we reduce validation noise induced by stochastic bag sampling by evaluating each validation patient under $K$ deterministic validation bags (here $K=5$). This repeated-sampling/aggregation strategy is related in spirit to Monte-Carlo or repeated instance sampling approaches in MIL, and to ensemble-style stabilization under stochastic instance selection \cite{combalia2018montecarloMIL,carbonneau2016rsis}. For each $\texttt{bag\_fold}\in\mathcal{B}=\{1,\dots,K\}$ we run inference to obtain per-patient logits $z^{(\texttt{bag\_fold})}$, then aggregate logits across bag-folds (mean in logit space) and apply the sigmoid to obtain $p_{\text{va}}$.
+
+We compute AP-lift as
+\begin{equation}\label{eq:ap_lift}
+\mathrm{AP\text{-}lift} \;=\; \mathrm{AP}(p_{\text{va}}, y_{\text{va}}) \;-\; \mathrm{prevalence}(y_{\text{va}})\,.
+\end{equation}
+To discourage degenerate solutions, we also compute diagnostics on the aggregated probabilities $p_{\text{va}}$. In particular, overly saturated probabilities can be a practical symptom of overconfident or poorly calibrated checkpoints, hence we explicitly monitor and penalize saturation \cite{kurz2023calibrationWSI}.
+Let $\varepsilon_{\text{sat}}=0.05$ denote the saturation margin. Then
+\begin{align}
+\texttt{sat\_frac} &= \frac{1}{N}\sum_{i=1}^{N}\mathbb{I}\!\left[p_{\text{va},i}<\varepsilon_{\text{sat}} \;\lor\; p_{\text{va},i}>1-\varepsilon_{\text{sat}}\right], \\
+\texttt{flat\_std} &= \mathrm{std}\!\left(p_{\text{va}}\right), \\
+\texttt{bag\_instability} &= \mathrm{median}_{i=1..N}\left(\mathrm{std}_{b\in\mathcal{B}}\left(p^{(b)}_{i}\right)\right),
+\end{align}
+where $N$ is the number of validation patients and $p^{(b)}_{i}=\sigma\!\left(z^{(b)}_{i}\right)$ is the probability for patient $i$ under bag-fold $b$. Using variability across repeated views as a stability diagnostic is also consistent with the broader literature on uncertainty/robustness estimation in computational pathology \cite{mehrtens2023uncertaintyHistopath}.
+
+The final checkpoint selection score is
+\begin{equation}\label{eq:selection_score}
+\mathrm{score} \;=\; \mathrm{AP\text{-}lift} \;-\; \lambda_{\text{sat}}\,\phi_{\text{sat}}
+\;-\; \lambda_{\text{flat}}\,\phi_{\text{flat}}
+\;-\; \lambda_{\text{bag}}\,\phi_{\text{bag}}\,,
+\end{equation}
+with penalty terms defined from the diagnostics as hinge-like functions:
+\begin{align}
+\phi_{\text{sat}} &= \big(\texttt{sat\_frac}-\tau_{\text{sat}}\big)_+, \\
+\phi_{\text{bag}} &= \left(\frac{\texttt{bag\_instability}-\tau_{\text{bag}}}{\tau_{\text{bag}}}\right)_+, \\
+\phi_{\text{flat}} &=
+\mathbb{I}\!\left[\mathrm{AP\text{-}lift}<\tau_{\text{ap}}\right]\;
+\left(\frac{\tau_{\text{flat}}-\texttt{flat\_std}}{\tau_{\text{flat}}}\right)_+,
+\end{align}
+where $(x)_+=\max(x,0)$ and $\mathbb{I}[\cdot]$ is the indicator function.
+In our final configuration we used $\tau_{\text{sat}}=0.20$, $\tau_{\text{ap}}=0.02$, $\tau_{\text{flat}}=0.05$, and $\tau_{\text{bag}}=0.15$, with weights $\lambda_{\text{sat}}=0.5$, $\lambda_{\text{flat}}=0.2$, and $\lambda_{\text{bag}}=0.6$.
+We gate the flatness penalty by AP-lift to avoid penalizing confident, well-separating checkpoints; the flatness term is only used to down-rank near-degenerate solutions when discrimination is weak.
+We select, for each fold and initialization, the checkpoint that maximizes this score.
+
+
+
+\begin{algorithm}[H]
+\caption{Fold training with deterministic $K$-bag validation and rollback}
+\label{alg:training_final}
+\footnotesize
+\begin{algorithmic}[1]
+\REQUIRE Fold split; max epochs $E_{\max}$; train bag size $M$; deterministic validation bags $K_{\text{bags}}$.
+\REQUIRE Loss and scoring definitions as in Equation~\ref{eq:loss_total} and Equation~\ref{eq:selection_score}. 
+\STATE Initialize parameters $\theta$, optimizer (AdamW), scheduler (ReduceLROnPlateau).
+\STATE $s^\star\leftarrow -\infty$, $\theta^\star\leftarrow \theta$, $c_{\text{noimp}}\leftarrow 0$, $c_{\text{gap}}\leftarrow 0$.
+\FOR{$t=1,\dots,E_{\max}$}
+    \STATE Sample a stochastic patient bag of target size $M$ and perform one training epoch.
+    \STATE Compute total loss $\mathcal{L}(\theta)$ and update $\theta$ (clip + step).
+
+    \STATE \textbf{Deterministic validation:} $(\hat{\mathbf{p}}_t, s_t)\leftarrow \textsc{InferValKBags}(\theta, K_{\text{bags}})$.
+    \STATE Update scheduler with $s_t$.
+
+    \IF{$s_t > s^\star$}
+        \STATE $s^\star\leftarrow s_t$; $\theta^\star\leftarrow \theta$; $c_{\text{noimp}}\leftarrow 0$.
+    \ELSE
+        \STATE $c_{\text{noimp}}\leftarrow c_{\text{noimp}}+1$.
+    \ENDIF
+
+    \STATE Update overfitting guard: if the train--validation AUC gap persistently increases, increment $c_{\text{gap}}$; otherwise reset $c_{\text{gap}}$.
+
+
+    \IF{$c_{\text{noimp}} \ge P_{\text{rb}}$}
+        \STATE \textbf{Rollback:} $\theta\leftarrow \theta^\star$; reduce learning rate; $c_{\text{noimp}}\leftarrow 0$.
+    \ENDIF
+    \IF{$c_{\text{gap}} \ge P_{\text{gap}}$}
+        \STATE \textbf{break} \hfill // early stop on persistent overfitting signal
+    \ENDIF
+\ENDFOR
+\RETURN Best fold checkpoint $\theta^\star$ and corresponding out-of-fold predictions.
+\end{algorithmic}
+\end{algorithm}
+
+
+
+\paragraph{Definition of \textsc{InferValKBags}.}
+Let $\mathcal{B}=\{1,\dots,K_{\text{bags}}\}$ denote the set of deterministic bag-folds used at validation time.
+For each $b\in\mathcal{B}$, we construct a deterministic validation bag for every patient (according to bag-fold $b$) and run inference to obtain patient-level logits $z^{(b)}$ on the validation set.
+We then aggregate logits across bag-folds for each patient (e.g., mean in logit space) and apply the sigmoid function to obtain validation probabilities $p_{\text{va}}$.
+Alongside the main selection score (Eq.~\ref{eq:selection_score}), we compute diagnostic terms used by the score: saturation fraction (\texttt{sat\_frac}), probability flatness (\texttt{flat\_std}), and bag-instability (median per-patient standard deviation across $\{p^{(b)}\}_{b\in\mathcal{B}}$).
+
+
+\paragraph{Inference and ensembling.}
+We use the same inference pipeline for validation (\textsc{Infer\allowbreak ValKBags})
+and for final evaluation. For each patient, we run deterministic sampling to obtain a fixed-size bag (consistent with training), compute a probability $p^{(j)}$ for each trained model checkpoint, and then form an ensemble by probability averaging. In our final setup, we load the $N=10$ selected checkpoints from the $2\times 5$ cross-validation runs.
+\begin{equation}\label{eq:ensemble_prob}
+ p_{\text{ens}} = \frac{1}{N}\sum_{j=1}^{N} p^{(j)}~,
+\end{equation}
+where $p^{(j)}$ denotes the (calibrated) sigmoid output of model $j$ for that patient. This keeps the evaluation protocol identical to validation, with the only difference being that multiple finalized checkpoints are loaded and aggregated.
+
+\section{Post-hoc Calibration}
+\label{sec:calibration}
+After training and selecting final models for each fold, we perform a post-hoc calibration to align the models’ outputs. It is known that modern neural networks can be mis-calibrated, i.e.\ the predicted probabilities are not \emph{consistent with empirical outcome frequencies} \cite{guo2017calibration}. Concretely, if we consider samples for which the model predicts a probability close to (say) $0.8$ (e.g., within a small probability bin), then in a perfectly calibrated model approximately $80\%$ of those samples should truly belong to the positive class; in practice, modern networks are often systematically over-confident or under-confident \cite{guo2017calibration}. This discrepancy is typically visualized with reliability diagrams and summarized by calibration metrics such as the Expected Calibration Error (ECE) \cite{guo2017calibration}.
+In our scenario of multiple CV models, we additionally observed an issue of scale inconsistency: some models tended to output generally higher probability scores than others for the positive class, even when their classification accuracy was similar. This is problematic when we combine predictions from different models or want to set a single probability threshold across all predictions.
+
+To correct this, we apply a logit \emph{standardization} (z-score) on a per-model basis, and then aggregate across the ensemble. Specifically, for each trained model indexed by the split seed $s$ and fold $k$, we compute the mean and standard deviation of its out-of-fold logits on the corresponding validation set,
+\begin{equation}\label{eq:calib_eq}
+\mu_{s,k} = \frac{1}{|\mathrm{Val}_{s,k}|}\sum_{i\in \mathrm{Val}_{s,k}} \ell_{i,s,k}
+\qquad\text{and}\qquad
+\sigma_{s,k} = \mathrm{Std}\big(\{\ell_{i,s,k}\}_{i\in \mathrm{Val}_{s,k}}\big)~,
+\end{equation}
+where $\ell_{i,s,k}$ denotes the raw model output \emph{logit} (pre-sigmoid) for patient $i$ under model $(s,k)$, and $p_{i,s,k}=\sigma(\ell_{i,s,k})$ is the corresponding probability.
+
+We then rescale each model’s logit by subtracting $\mu_{s,k}$ and dividing by $\sigma_{s,k}$, apply the sigmoid, and finally average probabilities across the ensemble:
+\begin{equation}\label{eq:prob_rescale_ensemble}
+P_i^{\text{final}} = \mathbb{E}_{s,k}\left[\, \sigma\!\left(\frac{\ell_{i,s,k} - \mu_{s,k}}{\sigma_{s,k}}\right)\,\right]~.
+\end{equation}
+This procedure aligns the scale of logits across models reducing between-fold output-scale variability while preserving within-model ranking. In practice, $\mu_{s,k}$ and $\sigma_{s,k}$ are computed using only out-of-fold validation predictions for each $(s,k)$ model and then kept fixed when applying that model to unseen patients.
+
+We emphasize that this calibration uses only intra-fold validation data and, most importantly, we do \emph{not} peek at any held-out test labels for calibration. After this step, we found that metrics like accuracy, sensitivity, and specificity (which depend on a threshold) became more consistent across folds, and an ensemble of models could be formed without one model dominating due to scale differences. All results reported for our final model (in Chapter~4) include this calibration. 
+
+% \section{Inference and Patient-Level Aggregation}
+% \label{sec:inference}
+% Once the MIL model is trained and calibrated, making a prediction for a new patient involves the same core steps as training, minus the learning. Given one or more WSIs for an unseen patient, we first run the tiling and QC pipeline (Section~3.3) on each slide to generate tile patches. We then apply the feature encoder (Section~3.4) to each tile to obtain features. If multiple slides exist, their features are combined into one bag for the patient.
+
+% At inference time, the bag size depends on the MIL head. For attention-pooling models such as CLAM, one can in principle use all available tiles because the aggregation is linear in the number of instances. For transformer-based TransMIL, however, self-attention scales quadratically in the number of tiles, making it impractical to process very large bags (thousands to tens of thousands of tiles) in a single forward pass. Therefore, for TransMIL we use deterministic sampling with a fixed seed and a maximum bag size of $M=1000$ tiles, consistent with training. This yields repeatable predictions while keeping computation bounded. The key difference from training is that we do not perform any augmentation or stochasticity during inference.
+
+% The trained MIL model (or models, if ensembling) is then applied to the patient’s bag. In a single-model scenario, the model directly outputs a logit $\ell_p$ and probability $p_p = \sigma(\ell_p)$ for HN. In our final setup, we use an ensemble of models – specifically, the 10 models from our 2$\times$5 CV (each trained on different splits, all using the same pipeline and hyperparameters). For each patient, we obtain each model’s output probability and then average these probabilities to get an ensemble prediction:
+% \begin{equation}\label{eq:ensemble_prob}
+%  p_{\text{ens}} = \frac{1}{N}\sum_{j=1}^{N} p^{(j)}~,
+% \end{equation}
+% where $p^{(j)}$ is model $j$’s sigmoid output for that patient. We found that this model averaging improves robustness: if one model had an idiosyncratic bias or missed a pattern, the others often compensate. Especially on the external 13-patient cohort, ensembling the cross-val models yielded a more stable performance (where a single model might overfit to quirks of its training fold, the ensemble prediction reflects a consensus). In a practical deployment with a single model, one might instead train on the full dataset and then apply calibration; however, with our small sample size, we opted to rely on cross-validation ensembles for more reliable estimates.
+
+% Finally, the model’s output can be thresholded to make a categorical prediction (HN vs LN). We use 0.5 as the default threshold after calibration. One could adjust this threshold for specific needs (e.g. maximizing sensitivity), but in our evaluation we report both the continuous outputs (for ROC/PR curves) and binary classifications (for accuracy, sensitivity, etc.), all at the default 0.5 threshold unless stated otherwise.
+
+% Algorithm~\ref{alg:inference} summarizes the inference process. Note that the inference pipeline is essentially the training pipeline without the gradient updates: tiling + feature extraction + forward pass. Because all components are deterministic given a model, we expect identical results for repeated runs on the same input. This consistency is important in a clinical setting.
+
+% \begin{algorithm}[!t]
+% \caption{Patient-level inference with probability averaging (overview)}
+% \label{alg:inference}
+% \begin{algorithmic}[1]
+% \REQUIRE Test set of patients $\mathcal{P}$ with precomputed tile embeddings $\{H_p\}_{p\in\mathcal{P}}$;
+% ensemble of trained models $\Theta=\{\theta_m\}$ (indexed by split seed / init seed / fold).
+% \STATE Initialize empty list of per-model predictions $\mathcal{R}\leftarrow []$
+% \FOR{\textbf{each} model $\theta_m\in\Theta$}
+%   \STATE Load checkpoint weights of $\theta_m$
+%   \FOR{\textbf{each} patient $p\in\mathcal{P}$}
+%     \STATE Compute binary logit $z_{m,p} \leftarrow \theta_m(H_p)$ and probability $p_{m,p}\leftarrow \sigma(z_{m,p})$
+%     \STATE Append $(p,\,p_{m,p})$ to $\mathcal{R}$
+%   \ENDFOR
+% \ENDFOR
+% \STATE Ensemble aggregation per patient:
+% \STATE $p_{\text{ens}}(p) \leftarrow \textsc{Mean}\{p_{m,p}\}$ over models $m$
+% \RETURN For each patient $p$: ensemble probability $p_{\text{ens}}(p)$.
+% \end{algorithmic}
+% \end{algorithm}
+
+
+
+\section{Interpretability: Attention Heatmaps}
+\label{sec:interpretability}
+A key advantage of the MIL approach is that it can provide instance-level interpretability. Since the model looks at tiles independently (to some extent) and produces attention weights, we can localize which regions of a WSI contributed most to the prediction. We exploit the attention mechanisms of our models to create visual explanations in two forms: WSI heatmaps and top tile images.
+
+For heatmaps, as described earlier, we retrieve the attention weight for each tile in a slide. In the case of CLAM, this is the learned weight $a_k$ for tile $k$. In the case of TransMIL, we extract the attention of the [CLS] token to tile $k$ from the final Transformer layer (if there are multiple attention heads, we can either take an average or focus on one head – we took an average over heads for simplicity). We then map each tile’s weight to a color intensity. We generate an image the size of the WSI (at thumbnail scale for visualization) and color each tile’s area according to its importance weight. Typically, we use a red-yellow colormap (red = high attention, blue = low) overlaid semi-transparently on the slide’s thumbnail. The result is a heatmap highlighting important regions. We ensure to include only tiles that were actually analyzed by the model (since some tiles might have been dropped in QC or sampling). These heatmaps allow pathologists to see, for example, that “the model focused on these 3 clusters of cells when calling this patient HN.” In our HN vs LN task, we indeed observed that HN predictions often highlight regions with heavy neutrophilic infiltrate, which matches medical intuition.
+
+For more quantitative inspection, we also identify the top $K$ tiles by attention for each slide. For instance, we might take the 5 highest-weighted tiles in an HN-classified slide and visually examine them. In many cases, these top tiles contain obvious tumor-associated neutrophils or tissue necrosis (known correlates with neutrophil count), suggesting the model learned to attend to relevant morphology. In contrast, the bottom-weighted tiles often are blank stroma or artifact, which is expected. We can use these tile rankings as a form of explanation to clinicians: e.g. “the model’s decision was primarily influenced by the regions shown here (top tiles).” This can be presented as a panel of image patches.
+
+In our implementation, generating a heatmap or top-tile visualization is a post-processing step that does not affect the model. We simply forward the slide’s tiles through the trained model, extract attention scores, and then map them back to coordinates (which we stored in the tile index). Because each tile has a unique ID and known coordinates, linking the attention score to the original WSI location is straightforward and unambiguous.
+
+We will showcase some attention heatmaps and top tile examples in Chapter~4 (Results) to demonstrate the interpretability of our final model. These visualizations provide confidence that the model is not making predictions based on irrelevant artifacts but rather on histologically meaningful features – an essential aspect for deployment in pathology, where trust and transparency are as important as raw accuracy.
+
+% \section{External cohort processing and stain normalization}
+
+% To process the TCGA-COAD/READ external cohort, we implemented a pipeline comprising tile indexing, stain normalization, feature extraction, and inference, reusing the same weakly-supervised model trained on the internal cohort. All steps were performed on HPC infrastructure via SLURM batch jobs, using the same software stack as in training.
+
+% \paragraph{Tile indexing.}  
+% Whole-slide images (WSIs) from the TCGA cohort, provided in SVS format, were tiled using a custom indexer script (\texttt{tile\_indexer\_fixed\_v3.py}), producing a Parquet file per slide with tile coordinates, QC metrics, and tissue coverage. The script uses TIAToolbox to compute a low-resolution Otsu tissue mask and applies filtering to retain only tiles with tissue fraction above a given threshold. Parameters were kept consistent with the internal training pipeline:
+% \begin{itemize}
+%   \item Tile size: 512 pixels @ 0.5 $\mu$m/px (i.e., 256~$\mu$m per tile)
+%   \item Stride: 512 pixels
+%   \item Tissue detection: Otsu mask at 4.0~$\mu$m/px, tissue threshold = 0.40 (same as internal pipeline)
+%   \item Fallback MPP: 0.252 $\mu$m/px (used if metadata missing)
+% \end{itemize}
+% Only one WSI per patient was used, selected to maximize tissue quality and metadata completeness.
+
+% \paragraph{Stain normalization.}  
+% Due to domain shift between the internal (single-center) and external (multi-center TCGA) cohorts, we applied stain normalization to improve consistency across cohorts. We adopted the Macenko method as implemented in TIAToolbox. The normalization was applied at tile level before feature extraction.
+
+% To select a robust reference, we first extracted a 3$\times$3 grid of tiles from each WSI in the training set using a dedicated notebook (\texttt{stain\_norm\_ref\_selection\_paths\_fixed.ipynb}), then computed a Lab-based distance metric to identify a central tile. The final normalization target was a synthetic 3$\times$3 mosaic composed of nine representative training tiles. This fixed target was used for all TCGA slides.
+
+% \paragraph{Feature extraction.}  
+% Features were extracted using the TITAN patch encoder, previously trained on internal data via contrastive learning. The encoder outputs 768-dimensional vectors per tile. For each WSI, features were extracted only for tiles passing tissue QC, normalized via Macenko as described above. The extraction was performed using the script \texttt{extract\_features\_titan\_external\_v3.py} with the following configuration:
+% \begin{itemize}
+%   \item Input: filtered tiles (.parquet), Macenko-normalized
+%   \item Output: one \texttt{.pt} file per slide containing an $N\times 768$ feature matrix
+%   \item Parameters: \texttt{tile\_mpp=0.5}, \texttt{tile\_px=512}, \texttt{mask\_mpp=4.0}
+% \end{itemize}
+% Only the 166 TCGA patients included in the final DFS analysis were processed.
+
+% \paragraph{Inference and aggregation.}  
+% Patient-level predictions were computed by applying the trained MIL model to the extracted TCGA features. Each patient is represented by one slide, mapped via slide filename prefix (\texttt{TCGA-XX-XXXX}). Inference used the same pipeline as for validation:
+% \begin{itemize}
+%   \item Sampling: 1024 tiles per patient (deterministic for reproducibility)
+%   \item Normalization mode: \texttt{slide\_zscore}
+%   \item MIL head: TransMIL with ensemble over $N=10$ checkpoints (\texttt{split\_seeds} and \texttt{init\_seeds})
+% \end{itemize}
+% The final patient score $p_\text{HN}$ was computed as the ensemble-averaged probability across models. These scores were used for downstream survival analysis.
+
+\section{External cohort and DFS analysis}
+\label{sec:external_tcga_inference}
+
+To assess cross-cohort generalization, we processed an external TCGA-COAD/READ cohort and applied the \emph{same} weakly-supervised MIL model trained on the internal cohort. The goal of this analysis is not to retrain the pipeline, but to test whether the patient-level model output (interpreted as a continuous risk score) is associated with disease-free survival (DFS), which is available for TCGA. All processing was executed on HPC infrastructure via SLURM batch jobs, reusing the same software environment adopted for training.
+
+\paragraph{Tile indexing, quality control, and feature extraction (same as training).}
+WSIs (SVS) were indexed into tile coordinates and quality-control metadata using the same tiling/QC configuration and the same code-paths adopted for the internal cohort (i.e., identical tile size and resolution, stride, tissue masking strategy, and filtering thresholds). Likewise, tile-level feature extraction for external inference reused the \emph{same} patch encoder and the \emph{same} preprocessing/IO conventions as in training; therefore, we do not repeat these parameters here. The only deliberate deviation with respect to the internal pipeline is the stain-normalization step described below, which was applied \emph{before} feature extraction.
+
+\paragraph{Macenko stain normalization with a training-derived target.}
+To mitigate domain shift between the internal single-center cohort and the multi-center TCGA cohort, we applied stain normalization at tile level using the Macenko method (as implemented in TIAToolbox). A single fixed normalization target was derived from the internal training cohort. Specifically, we computed slide-level color statistics on tissue-masked thumbnails in CIE Lab space (channel-wise means and standard deviations), and identified representative training slides by ranking them according to their squared distance from the training-set median in this 6D statistic space. From the selected representative slides, we extracted one tissue-rich tile per slide and combined nine such tiles into a fixed $3\times 3$ mosaic. This mosaic was then used as the Macenko \emph{fit} target, and every TCGA tile was normalized to this reference appearance prior to feature extraction.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.5\textwidth]{ref_target_mosaic_resized.png}
+\caption{Macenko stain-normalization reference target derived from the internal training cohort (fixed $3\times 3$ mosaic used as the normalization fit target).}
+\label{fig:stain_norm_target}
+\end{figure}
+
+\paragraph{Inference outputs.}
+For each TCGA patient, we computed a patient-level prediction by running inference with the trained MIL model using the same inference logic as internal validation (same model architecture, checkpoint ensemble strategy, feature normalization mode, and deterministic sampling policy). The resulting patient-level score (hereafter denoted $p_\mathrm{HN}$) was exported and used as the primary covariate for survival analysis. The final DFS analysis was restricted to the subset of TCGA patients for which both (i) model predictions and (ii) DFS information were available (166 patients in our final analysis).
+
+\paragraph{Disease-free survival (DFS) analysis.}
+Downstream DFS analysis was performed by merging the patient-level model score with DFS time-to-event and censoring information. We then conducted: (i) Kaplan--Meier analysis with log-rank testing after dichotomizing patients into High/Low score groups using a fixed threshold (0.5 in our analysis), (ii) univariate Cox proportional hazards models treating the model score as a continuous predictor (reported per $+0.1$ increase in score), and (iii) multivariate Cox models at fixed time horizons (administrative censoring at 24/36/60 months) including the model score together with standard clinicopathologic covariates (AJCC pathologic stage, diagnosis age, and sex). Where applicable, proportional-hazards assumptions were assessed using Schoenfeld residual diagnostics.

@@ -1,0 +1,93 @@
+\chapter{Conclusions}
+\label{ch:conclusions}
+
+This thesis investigated whether routine hematoxylin-and-eosin (H\&E) whole-slide images (WSIs) contain sufficient morphological information to predict a neutrophil-related immunophenotyping label in colorectal cancer (CRC). Specifically, we targeted the High CD15high neutrophils (HN) vs.\ Low CD15high neutrophils (LN) stratification defined from flow-cytometry measurements, where HN corresponds to a high fraction of CD15-positive neutrophils within CD66+CD10+ tumor-associated cells (threshold at 50\%), and LN otherwise.
+Beyond predictive performance, the work explicitly focused on reliability in weakly-supervised WSI learning, analyzing and mitigating failure modes that can lead to optimistic pooled out-of-fold (OOF) metrics yet brittle single-patient inference.
+
+\section{Summary of contributions}
+The main contributions of this work can be summarized as follows.
+
+First, we developed a modular computational pathology pipeline for weakly-supervised learning from gigapixel WSIs. The pipeline includes tissue-aware tiling and quality control, tile-level feature extraction using self-supervised histopathology foundation models, and patient-level aggregation via Multiple Instance Learning (MIL), with a transformer-based aggregator (TransMIL) as the final configuration.
+
+%%%%%%%%%%%%%% FIRST HPC
+From an HPC and engineering perspective, a key contribution is the decoupled compute design of the workflow: the expensive step (tile embedding extraction with foundation models) is executed once in a high-throughput manner and cached, while MIL training and ablation studies operate on compact embeddings. This separation enables scalable experimentation on gigapixel data under realistic resource constraints (GPU time, I/O throughput, and storage), and improves reproducibility by making model comparisons less sensitive to stochastic preprocessing and re-extraction.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+Second, we treated reliability as a first-class goal. We documented practical instability sources in MIL on WSIs (including inter-fold output-scale shifts and bag-sampling variance) and introduced stability-oriented choices for training, validation, and model selection, including deterministic multi-bag evaluation and penalty-based selection criteria.
+
+Third, we implemented post-hoc score handling via a fold-wise logit standardization scheme to reduce between-fold output-scale variability and to make a fixed operating point (e.g., $p=0.5$) more comparable across folds, while also analyzing when such rescaling improves calibration and when it may fail under distribution shift.
+
+Fourth, we used attention-derived heatmaps and top-tile inspection as an engineering tool for qualitative debugging and confounder detection, and we explicitly framed interpretability outputs as hypotheses to be validated, not as proof of specific cellular recognition.
+
+Finally, after training on an internal single-center cohort, we applied the final model in inference mode to an independent external cohort (TCGA COAD/READ). Since TCGA does not provide the same CD15-derived ground-truth labels, we performed a label-free external evaluation by testing whether the predicted HN-risk score is associated with disease-free survival (DFS), using Kaplan--Meier and Cox-based analyses.
+
+\section{What the results suggest}
+Overall, the results indicate that routine WSIs likely encode a subtle morphological signature associated with the targeted neutrophil-related immunophenotyping label. In our experiments, the baseline attention-based MIL configuration (CLAM with standard weighted pooling of tile embeddings) was able to capture part of this signal, but the best performance was obtained with the final TransMIL+CONCH configuration. A plausible explanation is architectural: transformer-based aggregation can explicitly model interactions among multiple informative tiles and integrate weak evidence that is spatially distributed across the slide, whereas the baseline primarily combines tiles through a simpler attention-weighted pooling mechanism that treats tile evidence more independently. This distinction matters in our setting because the HN/LN label is patient-level (not region-level) and the corresponding histological correlates may be heterogeneous, sparse, and not confined to a single “most informative” patch.
+
+
+On the internal development cohort (N=89 patients), the final TransMIL+CONCH configuration achieved strong cross-validated discrimination under the rescaled score protocol (Table~4.1), substantially improving over the baseline model, and produced the most favorable probability-quality indicators among the compared variants.
+On an independent held-out labeled set (N=13 patients), the final configuration achieved the strongest discrimination and the best threshold-based performance when using raw ensemble probabilities (Table~4.3), while also highlighting that such estimates remain statistically fragile at this sample size.
+
+When evaluating external transfer through TCGA DFS analysis (N=166 patients with 21 DFS events), Kaplan--Meier analyses using a fixed score cut-off ($p=0.5$) showed consistent separation between low- and high-score groups across multiple administrative censoring horizons (24/36/60 months), supporting the presence of a prognostic association signal.
+At the same time, Cox proportional-hazards models on the continuous score showed weaker evidence with wide confidence intervals, suggesting that the relationship may be limited by event counts and/or may not be well captured by a strictly log-linear effect.
+
+Taken together, the work supports a cautious interpretation: the model behaves consistently with the intended biological signal internally and shows a promising association with DFS externally, but the current evidence is not sufficient to claim definitive clinical validity.
+
+\section{Limitations}
+The main limitations should be highlighted explicitly.
+
+\paragraph{Proof-of-concept nature due to limited supervised cohort size.}
+Although results are encouraging, the supervised development cohort is relatively small (N=89) and single-center, and the fully held-out labeled evaluation is especially limited (N=13). Therefore, the present work should be framed primarily as a proof-of-concept demonstrating feasibility, rather than as a finalized biomarker ready for clinical deployment.
+
+\paragraph{Weak supervision and absence of spatial ground truth.}
+The HN/LN label is patient-level and derived from immunophenotyping, without spatial annotations of neutrophil-rich regions on WSIs. As in most MIL settings, this creates an intrinsic identifiability problem: multiple tissue patterns could correlate with the label, and attention visualizations alone do not resolve causality or specificity.
+
+\paragraph{Interpretability is qualitative and not clinically validated.}
+Attention heatmaps were used as an exploratory debugging and communication tool. They have not been systematically evaluated by expert pathologists, and they must not be interpreted as proof that the model is focusing on neutrophils or any specific histologic substrate. Visual artifacts (e.g., attention leakage, tiling-grid effects, tissue folds or scanner-related patterns) remain plausible explanations for some activation patterns.
+
+\paragraph{Tissue-aware tiling is not tumor-only selection.}
+The current preprocessing relies on tissue detection (masking) rather than explicit tumor-region identification. Consequently, the tile pool can include heterogeneous tissue components present on diagnostic slides (tumor epithelium, stroma, normal mucosa, necrosis, etc.). This can dilute a sparse weakly-supervised signal and increase computational load.
+
+\paragraph{Cross-cohort calibration and thresholding are non-trivial.}
+The fold-wise rescaling strategy improves probability quality in internal cross-validation, but it does not consistently improve fixed-threshold performance under distribution shift (as shown on the held-out set and discussed in the Results). This highlights that calibration and operating-point selection remain open problems when moving from internal validation to truly independent cohorts.
+
+\paragraph{External validation is association-based and event-limited.}
+The TCGA analysis does not provide CD15-derived labels; therefore, it is not a direct classifier validation. The survival analysis is hypothesis-generating and limited by a modest number of events, leading to uncertainty in effect-size estimates and limiting the strength of causal or clinical claims.
+
+\section{Future Perspective}
+Several concrete directions can strengthen both scientific validity and translational potential.
+
+\paragraph{Broader and multi-center validation.}
+The most immediate priority is to expand the labeled development cohort and to validate on larger, independent external cohorts with harmonized endpoints. This includes increasing the number of labeled cases and ensuring multi-center diversity (scanner, staining protocols, patient mix), so that performance and calibration can be evaluated under realistic distribution shift. Where possible, prospective validation should be considered to reduce retrospective biases.
+
+\paragraph{Pathologist validation of attention heatmaps.}
+A key next step is to subject heatmaps and top-tile panels to systematic review by expert pathologists, with a pre-defined protocol that enables quantitative assessment. For example, one could:
+(i) ask pathologists (blinded to model outputs) to annotate regions expected to be relevant to neutrophil-related microenvironment patterns,
+(ii) quantify overlap or enrichment between annotated regions and high-attention tiles (e.g., top-$q$\% attention),
+(iii) evaluate inter-observer agreement and the consistency of model focus across cases,
+and (iv) assess whether the attention concentrates on known histological correlates (e.g., neutrophil-rich infiltrates, necrosis) or reveals reproducible patterns that may have been underappreciated clinically.
+This would turn interpretability from qualitative inspection into measurable evidence.
+
+\paragraph{Tumor region identification to reduce noise and strengthen the weak signal.}
+Although the WSIs are from primary tumors, diagnostic H\&E slides often include mixed tissue (tumor and adjacent non-tumor regions). Since the current training does not explicitly separate tissue types, future work should integrate tumor-region identification (e.g., tumor segmentation or tissue-type classification) before tiling/feature extraction. Restricting MIL bags to tumor tiles could (i) reduce the total tile pool and computational burden, (ii) decrease the fraction of irrelevant instances, and (iii) potentially strengthen a sparse weakly-supervised signal by increasing the density of informative tiles.
+
+%%%%%%%%%%%%%%%%%%%%%%% SECOND HPC
+\paragraph{HPC and deployment perspective.}
+Moving from a proof-of-concept to routine large-cohort validation makes throughput and reproducibility first-order concerns: millions of tiles must be processed efficiently, and results must be repeatable across software/hardware environments. Future work should therefore benchmark and optimize the end-to-end pipeline (I/O, tile decoding, GPU utilization, and storage pressure), evaluate distributed or streaming feature extraction at scale to support multi-center experiments. In practice, these engineering constraints strongly influence whether a computational pathology model can be validated on sufficiently large cohorts within acceptable time and cost budgets.
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+\paragraph{More robust calibration under distribution shift.}
+Given the observed sensitivity of fixed-threshold decisions to output-scale shifts, future work should study calibration strategies explicitly designed for cross-domain transfer (e.g., external calibration sets, domain-aware temperature scaling, or uncertainty-aware abstention rules). The goal should be to define operating points that remain meaningful across cohorts, rather than optimizing internal cross-validation calibration alone.
+
+\paragraph{Richer learning targets and additional analyses.}
+Where continuous immune measurements are available, future extensions could explore joint learning objectives (classification + regression) to better exploit the continuous signal, and investigate whether the image-derived score provides complementary prognostic information beyond standard clinico-pathological covariates in larger cohorts.
+
+\section{Closing remarks}
+In conclusion, this work provides evidence that weakly-supervised learning on routine H\&E WSIs can capture morphological correlates of a neutrophil-related immunophenotyping label, and that transformer-based MIL with reliability-oriented training and validation choices can yield promising internal performance and a non-trivial external association with DFS.
+At the same time, the limited size of the labeled cohort, the absence of spatial ground truth, and the current lack of systematic pathologist validation mean that the present results should be interpreted as a proof-of-concept.
+Strengthening validation (multi-center, larger event counts), integrating tumor-specific preprocessing, and quantifying interpretability with expert review are the critical steps required to move from feasibility to clinically credible evidence.
+
+%%%%%%%%%%%%%%% THIRD HPC
+Beyond the biological hypothesis, this thesis also demonstrates an HPC-oriented design pattern for WSI learning: an offline high-throughput feature extraction followed by lightweight MIL training that makes large-scale, reproducible experimentation on gigapixel images practically feasible. This viewpoint is essential for translating weakly-supervised computational pathology from small retrospective studies to larger, multi-center validation efforts.
+
