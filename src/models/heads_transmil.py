@@ -1,6 +1,7 @@
+import math
 import torch
 import torch.nn as nn
-from src.models.layers_attention import TransformerEncoderLayerRetAttn, _xavier_
+from src.models.layers_attention import TransformerEncoderLayerRetAttn, RelPosBias2D, _xavier_
 
 
 class DSMILHead(nn.Module):

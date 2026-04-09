@@ -2,7 +2,14 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from torch.nn.utils import clip_grad_norm_
-from src.training.losses import instance_dropout, feature_jitter, attention_entropy, smooth_targets
+from src.training.losses import (
+    instance_dropout,
+    feature_jitter,
+    attention_entropy,
+    smooth_targets,
+    bin_metrics,
+    cont_metrics,
+)
 from src.models.heads_clam import clam_instance_loss
 from src.utils.logging import _scalar
 

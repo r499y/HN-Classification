@@ -1,9 +1,43 @@
 # Pipeline
 
-1. Tile indexing (`src/data/manifests.py`)
-2. Feature extraction internal (`src/inference/predict_internal.py`)
-3. Feature extraction external (`src/inference/predict_external_tcga.py`)
-4. Training / validation (placeholder modules in `src/training`)
-5. Inference + evaluation (placeholders in `src/inference`, `src/eval`)
+## 1) Indexing WSI -> tile index
+- Entry point: `src/data/manifests.py`
+- Input: cartella WSI (`--wsi_dir`) o singolo file (`--wsi_path`)
+- Output:
+  - `tile_index/*.parquet` (o CSV con `--no_parquet`)
+  - `qc/meta/*.json`
+  - `tile_index_manifest.csv`
 
-> Nota: training/eval modulari sono stati scaffoldati e vanno popolati con codice già disponibile nei tuoi file locali non ancora caricati.
+## 2) Feature extraction (internal)
+- Entry point: `src/inference/predict_internal.py`
+- Input:
+  - `--svs`
+  - `--parquet`
+- Output:
+  - `*.pt` (feature tensor + row_idx)
+  - `*.json` (metadata/QC)
+
+## 3) Feature extraction (external / TCGA)
+- Entry point: `src/inference/predict_external_tcga.py`
+- Extra: `--read_mode auto|level0|mpp` + opzionale stain normalization.
+
+## 4) Training / model selection
+- Funzioni core estratte nei moduli:
+  - `src/data/patient_dataset.py`
+  - `src/models/*`
+  - `src/training/*`
+- Esecuzione pratica corrente:
+  - notebook `notebooks/01_exploration.ipynb`
+  - script `scripts/train_cv.sh`
+
+## 5) Inference interna/esterna e figure
+- Notebook:
+  - `notebooks/03_case_studies_heatmaps.ipynb` (internal/interpretabilità)
+  - `notebooks/02_results_figures.ipynb` (external/results)
+- Script:
+  - `scripts/infer_internal.sh`
+  - `scripts/infer_tcga.sh`
+
+## Known gaps per nuovi utilizzatori
+- Path HPC hardcoded nei launcher storici (`scripts/run_*.sh`).
+- Asset esterni non versionati (manifest, checkpoint, csv di rescaling, dataset).
