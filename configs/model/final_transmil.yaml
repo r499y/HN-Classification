@@ -1,0 +1,5 @@
+# Placeholder config
+name: transmil
+backbone: conch_titan
+embed_dim: 768
+max_bag_size: 1024

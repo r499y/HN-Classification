@@ -221,16 +221,20 @@ def index_one_slide(path, out_root, tile_px=256, tile_mpp=0.5, stride=256,
     out_path_csv = out_dir / f"{slide_id}.csv"
 
     if df.empty:
-    	# se vuoto, non scrivere niente (o scrivi parquet vuoto, a scelta)
-    	out_path = None
+        # se vuoto, non scrivere niente (o scrivi parquet vuoto, a scelta)
+        out_path = None
 
     elif HAVE_ARROW and write_parquet:
-    	table = pa.Table.from_pandas(df)
-    	pq.write_table(table, out_path_parquet)
-    	out_path = out_path_parquet
+        table = pa.Table.from_pandas(df)
+        pq.write_table(table, out_path_parquet)
+        out_path = out_path_parquet
+
+    elif not write_parquet:
+        df.to_csv(out_path_csv, index=False)
+        out_path = out_path_csv
 
     else:
-    	raise RuntimeError("Parquet non disponibile (manca pyarrow o write_parquet=False).")
+        raise RuntimeError("Parquet non disponibile (manca pyarrow).")
 
 
     # meta json
@@ -249,6 +253,7 @@ def index_one_slide(path, out_root, tile_px=256, tile_mpp=0.5, stride=256,
         index_path=str(out_path)
     )
     meta_dir = Path(out_root) / "qc" / "meta"
+    meta_dir.mkdir(parents=True, exist_ok=True)
     with open(meta_dir / f"{slide_id}.json", "w") as f:
         json.dump(meta, f, indent=2)
 
@@ -342,6 +347,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-

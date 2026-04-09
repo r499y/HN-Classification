@@ -1,0 +1,10 @@
+numpy
+pandas
+torch
+Pillow
+transformers
+pyarrow
+tiatoolbox
+scikit-learn
+scipy
+matplotlib
