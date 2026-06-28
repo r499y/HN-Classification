@@ -37,7 +37,7 @@ LIST="/hpcnfs/home/ieo7627/slides_for_feature_extraction.tsv"
 OUTDIR="/hpcscratch/ieo/ieo7627/features/more_6"
 
 # Feature extractor script (patched for external cohorts)
-SCRIPT="/hpcnfs/home/ieo7627/extract_features_titan_external_v3.py"
+SCRIPT="src/inference/predict_external_tcga.py"
 
 # =============================
 # READ / MODEL SETTINGS

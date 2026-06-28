@@ -1,0 +1,4 @@
+# Placeholder config
+name: clam
+backbone: lunit_vits8_224
+embed_dim: 384

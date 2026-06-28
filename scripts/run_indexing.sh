@@ -13,7 +13,7 @@ mkdir -p /hpcnfs/home/ieo7627/logs
 
 # --- CONFIG ---
 PYTHON_BIN="/hpcnfs/scratch/LN/Nicolo_envs/crc-tia/bin/python"
-SCRIPT="/hpcnfs/home/ieo7627/tile_indexer_fixed.py"
+SCRIPT="src/data/manifests.py"
 CSV_MAPPING="/hpcnfs/home/ieo7627/isto-svs-cs3.csv"
 WSI_DIR="/hpcnfs/data/LN/P_LN_MITICO/MITICO_01122025"
 OUT_DIR="/hpcnfs/data/LN/P_LN_MITICO/parquet_TITAN"

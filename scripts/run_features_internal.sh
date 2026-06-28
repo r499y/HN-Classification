@@ -50,7 +50,7 @@ nvidia-smi || echo "[WARN] nvidia-smi fallita (GPU non visibile?)"
 
 #sed -i 's/\t/    /g' /hpcnfs/home/ieo7627/extract_features_lunit.py
 
-srun --gpu-bind=none "$PY" -u /hpcnfs/home/ieo7627/extract_features_titan.py \
+srun --gpu-bind=none "$PY" -u src/inference/predict_internal.py \
   --svs "$SVS" \
   --parquet "$PARQ" \
   --outdir "$OUTDIR" \

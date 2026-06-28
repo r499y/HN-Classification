@@ -1,0 +1,4 @@
+# Placeholder config
+task: tcga_inference
+threshold: 0.5
+survival_horizons: [24, 36, 60]
